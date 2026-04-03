@@ -37,17 +37,24 @@ That is it. The script will:
 
 ## Docker
 
-Run with Docker Compose (recommended):
+**Pre-built images** (amd64 + arm64) are published to GHCR on every release:
+
+```bash
+docker pull ghcr.io/nesquena/hermes-webui:latest
+docker run -d -p 8787:8787 -v ~/.hermes:/root/.hermes ghcr.io/nesquena/hermes-webui:latest
+```
+
+Or run with Docker Compose (recommended):
 
 ```bash
 docker compose up -d
 ```
 
-Or build and run manually:
+Or build locally:
 
 ```bash
 docker build -t hermes-webui .
-docker run -d -p 8787:8787 -v ~/.hermes:/root/.hermes:ro hermes-webui
+docker run -d -p 8787:8787 -v ~/.hermes:/root/.hermes hermes-webui
 ```
 
 Open http://localhost:8787 in your browser.
@@ -55,7 +62,7 @@ Open http://localhost:8787 in your browser.
 To enable password protection:
 
 ```bash
-docker run -d -p 8787:8787 -e HERMES_WEBUI_PASSWORD=your-secret -v ~/.hermes:/root/.hermes:ro hermes-webui
+docker run -d -p 8787:8787 -e HERMES_WEBUI_PASSWORD=your-secret -v ~/.hermes:/root/.hermes ghcr.io/nesquena/hermes-webui:latest
 ```
 
 Session data persists in a named volume (`hermes-data`) across restarts.
@@ -169,8 +176,8 @@ Or using the agent venv explicitly:
 ```
 
 Tests run against an isolated server on port 8788 with a separate state directory.
-Production data and real cron jobs are never touched. Current count: **415 tests**
-across 21 test files.
+Production data and real cron jobs are never touched. Current count: **426 tests**
+across 22 test files.
 
 ---
 
@@ -277,30 +284,31 @@ across 21 test files.
 server.py               HTTP routing shell + auth middleware (~81 lines)
 api/
   auth.py               Optional password authentication, signed cookies (~149 lines)
-  config.py             Discovery, globals, model detection, reloadable config (~701 lines)
+  config.py             Discovery, globals, model detection, reloadable config (~702 lines)
   helpers.py            HTTP helpers, security headers (~71 lines)
-  models.py             Session model + CRUD (~137 lines)
-  profiles.py           Profile state management, hermes_cli wrapper (~246 lines)
+  models.py             Session model + CRUD (~146 lines)
+  profiles.py           Profile state management, hermes_cli wrapper (~366 lines)
   routes.py             All GET + POST route handlers (~1180 lines)
-  streaming.py          SSE engine, run_agent, cancel support (~236 lines)
+  streaming.py          SSE engine, run_agent, cancel support (~272 lines)
   upload.py             Multipart parser, file upload handler (~78 lines)
-  workspace.py          File ops, workspace helpers (~77 lines)
+  workspace.py          File ops, workspace helpers (~245 lines)
 static/
   index.html            HTML template (~364 lines)
   style.css             All CSS incl. mobile responsive (~670 lines)
-  ui.js                 DOM helpers, renderMd, tool cards, file tree (~977 lines)
-  workspace.js          File preview, file ops (~185 lines)
-  sessions.js           Session CRUD, list rendering, search (~533 lines)
-  messages.js           send(), SSE handlers, approval, transcript (~297 lines)
-  panels.js             Cron, skills, memory, profiles, settings (~974 lines)
+  ui.js                 DOM helpers, renderMd, tool cards, file tree (~1002 lines)
+  workspace.js          File preview, file ops (~191 lines)
+  sessions.js           Session CRUD, list rendering, search (~556 lines)
+  messages.js           send(), SSE handlers, approval, transcript (~337 lines)
+  panels.js             Cron, skills, memory, profiles, settings (~1030 lines)
   commands.js           Slash command autocomplete (~156 lines)
   boot.js               Mobile nav, voice input, boot IIFE (~338 lines)
 tests/
   conftest.py           Isolated test server (port 8788)
-  test_sprint{1-20b}.py 21 test files, 415 test functions
+  test_sprint{1-23}.py  22 test files, 426 test functions
   test_regressions.py   Permanent regression gate (23 tests)
 Dockerfile              python:3.12-slim container image
 docker-compose.yml      Compose with named volume and optional auth
+.github/workflows/      CI: multi-arch Docker build + GitHub Release on tag
 ```
 
 State lives outside the repo at `~/.hermes/webui-mvp/` by default

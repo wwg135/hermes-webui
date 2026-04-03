@@ -3,8 +3,8 @@
 > Goal: Full 1:1 parity with the Hermes CLI experience via a clean dark web UI.
 > Everything you can do from the CLI terminal, you can do from this UI.
 >
-> Last updated: Sprint 22 / v0.24 (April 3, 2026)
-> Tests: 415 total (392 passing, 23 pre-existing failures)
+> Last updated: v0.28.1 (April 3, 2026)
+> Tests: 426 total (403 passing, 23 pre-existing failures)
 > Source: <repo>/
 
 ---
@@ -46,11 +46,12 @@
 
 | Layer | Location | Status |
 |-------|----------|--------|
-| Python server | <repo>/server.py (~81 lines) + api/ modules (~2876 lines) | Thin shell + auth middleware + business logic in api/ |
+| Python server | <repo>/server.py (~81 lines) + api/ modules (~3210 lines) | Thin shell + auth middleware + business logic in api/ |
 | HTML template | <repo>/static/index.html (~364 lines) | Served from disk |
 | CSS | <repo>/static/style.css (~670 lines) | Served from disk, incl. mobile responsive |
-| JavaScript | <repo>/static/{ui,workspace,sessions,messages,panels,boot,commands}.js | 7 modules, ~3460 lines total |
-| Docker | Dockerfile, docker-compose.yml, .dockerignore | python:3.12-slim, named volume |
+| JavaScript | <repo>/static/{ui,workspace,sessions,messages,panels,boot,commands}.js | 7 modules, ~3610 lines total |
+| Docker | Dockerfile, docker-compose.yml, .dockerignore | python:3.12-slim, multi-arch (amd64+arm64) |
+| CI/CD | .github/workflows/release.yml | Auto-release + GHCR publish on tag push |
 | Runtime state | ~/.hermes/webui-mvp/sessions/ | Session JSON files |
 | Test server | Port 8788, state dir ~/.hermes/webui-mvp-test/ | Isolated, wiped per run |
 | Production server | Port 8787 | SSH tunnel from Mac |
@@ -273,96 +274,29 @@ Enter saves, Escape cancels. Topbar updates immediately.
 
 ---
 
-## Wave 3: Power Features and Developer Experience
+## Completed Waves (Summary)
 
-### Sprint 3.1: Tool Call Visibility Inline
-Show tool calls as collapsible cards in the conversation.
-Collapsed: tool name badge + one-line preview. Expanded: full args + result.
-
-### Sprint 3.2: Multi-Model Expansion
-Add more models. Group by provider. Model info tooltip on hover.
-(Partially done: 10 models in dropdown from Sprint 1.)
-
-### Sprint 3.2b: Resizable Panel Widths (COMPLETE Sprint 6)
-Both sidebar and workspace panel are drag-resizable with localStorage persistence.
-
-### Sprint 3.3: Workspace File Actions
-- [x] Rename file (inline, double-click) (Sprint 14)
-- [x] Create folder (Sprint 14)
-- [x] Syntax highlighted code preview (Prism.js)
-
-### Sprint 3.4: Conversation Controls
-- [x] Copy message (Sprint 5)
-- [x] Edit last user message + regenerate
-- [x] Regenerate last assistant response
-- [x] Clear conversation (wipe messages, keep session)
-
----
-
-## Wave 4: Settings, Configuration, Notifications
-
-### Sprint 4.1: Settings Panel
-Full settings overlay: default model, default workspace, enabled toolsets, config viewer.
-
-### Sprint 4.2: Notification Panel
-Bell icon with unread count. SSE endpoint for cron completions and errors. Toast pop-ups.
-
-### Sprint 4.3: Delivery Target Config
-Configure and test-ping delivery targets (Discord, Telegram, Slack, email) for cron jobs.
-
----
-
-## Wave 5: Honcho Integration and Long-term Memory
-
-### Sprint 5.1: Honcho Memory Panel
-User representation panel, cross-session context, Honcho search, memory write.
-
-### Sprint 5.2: Session Continuity Features
-"What were we working on?" button, session tags, session archive.
-
----
-
-## Wave 6: Realtime and Agentic Features
-
-### Sprint 6.1: Background Task Monitor
-Live list of running agent threads. Cancel button. Queue visibility.
-
-### Sprint 6.2: Subagent Delegation Cards
-When delegate_task fires, show subagent progress inline in chat.
-
-### Sprint 6.3: Code Execution Panel
-Jupyter-style inline code cell. Stateful kernel per session.
-
-### Sprint 6.4: Voice Mode
-Push-to-talk mic button. Whisper transcription. Optional TTS playback.
-
----
-
-## Wave 7: Production Hardening and Mobile
-
-### Sprint 7.1: Authentication
-HERMES_WEBUI_PASSWORD env var gate. Signed cookie. Login page.
-
-### Sprint 7.2: HTTPS and Reverse Proxy
-Nginx + Let's Encrypt. CORS headers for external domain.
-
-### Sprint 7.3: Mobile Responsive Layout
-Collapsible sidebar hamburger. Touch-friendly controls. Swipe gestures.
-
-### Sprint 7.4: Performance and Scale
-Virtual scroll for session/message lists. Incremental message loading.
+| Wave | Theme | Key Deliverables |
+|------|-------|-----------------|
+| Wave 2 | Full CRUD + Interaction | Cron/skill/memory CRUD, session search, workspace management, session rename |
+| Wave 3 | Power Features | Tool call cards, multi-model dropdown, resizable panels, file actions, conversation controls |
+| Wave 4 | Settings + Notifications | Settings panel, cron alerts, background error banner |
+| Wave 5 | Session Continuity | Session tags, archive, projects/folders |
+| Wave 6 | Agentic Features | Background task cancel, voice input (Web Speech API) |
+| Wave 7 | Production Hardening | Password auth, security headers, mobile responsive, Docker + GHCR CI |
 
 ---
 
 ## User Requested Features
 
-Community-requested enhancements tracked from GitHub issues.
+Community-requested enhancements tracked from GitHub issues. All shipped.
 
-| Feature | Issue | Description | Complexity |
-|---------|-------|-------------|-----------|
-| Workspace tree view | #22 | Accordion/tree view for workspace file browser instead of flat list. Lazy-load subdirectories on expand, no backend changes needed. | Medium |
-| Docker container | #7 | Docker Compose setup with separate hermes-agent and hermes-webui containers, multi-arch (amd64 + arm64), volume mounts for config. | Medium-High |
-| Authentication | #23 | Password gate via `HERMES_WEBUI_PASSWORD` env var, login page, signed cookie. Already planned in Sprint 7.1. | Low-Medium |
-| Send key / personalization | #26 | Toggle send key (Enter vs Ctrl/Cmd+Enter) and queue vs interrupt mode as global settings. | Low |
-| Multi-profile support | #28 | Profile management UI: create, delete, switch, configure agent profiles. | Medium |
-| Mobile responsive UI | #21 | Hamburger menu, slide-out sidebar drawer, touch-friendly controls. Already planned in Sprint 7.3. | Medium-High |
+| Feature | Issue | Shipped | Sprint |
+|---------|-------|---------|--------|
+| Workspace tree view | #22 | Done | Sprint 18 |
+| Docker container + GHCR images | #7 | Done | Sprint 21 + v0.28.1 CI |
+| Authentication | #23 | Done | Sprint 19 |
+| Send key / personalization | #26 | Done | Sprint 17 |
+| Multi-profile support | #28 | Done | Sprint 22 |
+| Mobile responsive UI | #21 | Done | Sprint 21 |
+| Profile creation in Docker | #44 | Done | v0.27 |

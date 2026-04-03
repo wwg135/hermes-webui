@@ -5,6 +5,19 @@
 
 ---
 
+## [v0.28.1] CI Pipeline + Multi-Arch Docker Builds
+*April 3, 2026 | 426 tests*
+
+### Features
+- **GitHub Actions CI.** New workflow triggers on tag push (`v*`). Builds
+  multi-arch Docker images (linux/amd64 + linux/arm64), pushes to
+  `ghcr.io/nesquena/hermes-webui`, and creates a GitHub Release with
+  auto-generated release notes. Uses GHA layer caching for fast rebuilds.
+- **Pre-built container images.** Users can now `docker pull ghcr.io/nesquena/hermes-webui:latest`
+  instead of building locally.
+
+---
+
 ## [v0.27] Profile Creation Fallback for Docker (Issue #44)
 *April 3, 2026 | 426 tests*
 
@@ -904,4 +917,4 @@ Three-panel layout: sessions sidebar, chat area, workspace panel.
 
 ---
 
-*Last updated: v0.27, April 3, 2026 | Tests: 426*
+*Last updated: v0.28.1, April 3, 2026 | Tests: 426*
