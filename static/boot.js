@@ -21,12 +21,37 @@ function closeMobileSidebar(){
   const sidebar=document.querySelector('.sidebar');
   const overlay=$('mobileOverlay');
   if(sidebar)sidebar.classList.remove('mobile-open');
-  if(overlay)overlay.classList.remove('visible');
+  // only hide overlay if right panel is also closed
+  const panel=document.querySelector('.rightpanel');
+  if(!panel||!panel.classList.contains('mobile-open')){
+    if(overlay)overlay.classList.remove('visible');
+  }
 }
 function toggleMobileFiles(){
   const panel=document.querySelector('.rightpanel');
+  const overlay=$('mobileOverlay');
   if(!panel)return;
-  panel.classList.toggle('mobile-open');
+  if(panel.classList.contains('mobile-open')){
+    panel.classList.remove('mobile-open');
+    // only hide overlay if left sidebar is also closed
+    const sidebar=document.querySelector('.sidebar');
+    if(!sidebar||!sidebar.classList.contains('mobile-open')){
+      if(overlay)overlay.classList.remove('visible');
+    }
+  } else {
+    panel.classList.add('mobile-open');
+    if(overlay)overlay.classList.add('visible');
+  }
+}
+function closeMobileFiles(){
+  const panel=document.querySelector('.rightpanel');
+  const overlay=$('mobileOverlay');
+  if(panel)panel.classList.remove('mobile-open');
+  // only hide overlay if left sidebar is also closed
+  const sidebar=document.querySelector('.sidebar');
+  if(!sidebar||!sidebar.classList.contains('mobile-open')){
+    if(overlay)overlay.classList.remove('visible');
+  }
 }
 function mobileSwitchPanel(name){
   // Switch the panel content view
