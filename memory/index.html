@@ -1,0 +1,846 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <script>
+    (function(){
+      var p = window.location.pathname;
+      if (p.endsWith('/index.html')) {
+        var clean = p.slice(0, p.length - 'index.html'.length);
+        window.history.replaceState(null, '', clean + window.location.search + window.location.hash);
+      }
+    })();
+  </script>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Memory Providers for AI Agents — 2026 Guide</title>
+  <meta name="description" content="Which memory provider should you use with your AI agent? Compare Mem0, Hindsight, ByteRover, Supermemory, and more — free tiers, hosting options, benchmarks, and use-case picks.">
+<style>
+  :root {
+    --bg-primary: #0d1117;
+    --bg-secondary: #161b22;
+    --bg-tertiary: #21262d;
+    --bg-card: #161b22;
+    --border: #30363d;
+    --text-primary: #e6edf3;
+    --text-secondary: #8b949e;
+    --text-muted: #6e7681;
+    --accent: #f0a500;
+    --accent-dim: #c88800;
+    --accent-glow: rgba(240,165,0,0.12);
+    --green: #3fb950;
+    --blue: #58a6ff;
+    --purple: #bc8cff;
+    --red: #f85149;
+    --orange: #ff9040;
+    --nav-height: 64px;
+  }
+  [data-theme="light"] nav {
+    background: rgba(246, 248, 250, 0.95);
+  }
+  [data-theme="light"] {
+    --bg-primary: #ffffff;
+    --bg-secondary: #f6f8fa;
+    --bg-tertiary: #eaeef2;
+    --bg-card: #ffffff;
+    --border: #d0d7de;
+    --text-primary: #1f2328;
+    --text-secondary: #656d76;
+    --text-muted: #9198a1;
+    --accent: #c07800;
+    --accent-dim: #9a6200;
+    --accent-glow: rgba(192,120,0,0.10);
+  }
+
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    background: var(--bg-primary);
+    color: var(--text-primary);
+    line-height: 1.6;
+    min-height: 100vh;
+  }
+
+  /* NAV */
+  nav {
+    position: sticky;
+    top: 0;
+    height: var(--nav-height);
+    background: rgba(13, 17, 23, 0.92);
+    border-bottom: 1px solid var(--border);
+    backdrop-filter: blur(12px);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0 24px;
+    z-index: 100;
+  }
+  .nav-left { display: flex; align-items: center; gap: 16px; }
+  .nav-logo {
+    font-size: 1.1rem;
+    font-weight: 700;
+    color: var(--accent);
+    text-decoration: none;
+    letter-spacing: -0.01em;
+  }
+  .nav-back {
+    font-size: 0.85rem;
+    color: var(--text-secondary);
+    text-decoration: none;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 10px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    transition: color .15s, border-color .15s;
+  }
+  .nav-back:hover { color: var(--text-primary); border-color: var(--text-secondary); }
+  .nav-right { display: flex; align-items: center; gap: 12px; }
+  #theme-toggle {
+    background: none; border: 1px solid var(--border); color: var(--text-secondary);
+    cursor: pointer; border-radius: 6px; padding: 6px 10px; font-size: 1rem;
+    transition: color .15s, border-color .15s;
+  }
+  #theme-toggle:hover { color: var(--text-primary); border-color: var(--text-secondary); }
+  .btn-cta {
+    background: var(--accent); color: #0d1117; padding: 8px 16px;
+    border-radius: 6px; font-weight: 600; font-size: 0.85rem;
+    text-decoration: none; transition: background .15s;
+  }
+  .btn-cta:hover { background: var(--accent-dim); }
+
+  /* HAMBURGER */
+  .hamburger {
+    display: none; flex-direction: column; gap: 5px; cursor: pointer;
+    background: none; border: none; padding: 8px;
+  }
+  .hamburger span {
+    display: block; width: 22px; height: 2px;
+    background: var(--text-primary); border-radius: 2px; transition: .2s;
+  }
+  #memory-mobile-menu {
+    display: none; position: fixed; top: var(--nav-height); left: 0; right: 0;
+    background: var(--bg-secondary); border-bottom: 1px solid var(--border);
+    padding: 16px 24px; z-index: 99; flex-direction: column; gap: 4px;
+  }
+  #memory-mobile-menu.open { display: flex; }
+  #memory-mobile-menu a {
+    padding: 10px 0; color: var(--text-primary); text-decoration: none;
+    border-bottom: 1px solid var(--border); font-size: 0.95rem;
+  }
+  #memory-mobile-menu a:last-child { border-bottom: none; }
+  #memory-mobile-menu a.accent { color: var(--accent); font-weight: 600; }
+
+  /* HERO */
+  .hero {
+    padding: 64px 24px 48px;
+    text-align: center;
+    max-width: 760px;
+    margin: 0 auto;
+  }
+  .hero-eyebrow {
+    display: inline-block;
+    font-size: 0.78rem;
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--accent);
+    margin-bottom: 16px;
+  }
+  .hero h1 {
+    font-size: clamp(1.8rem, 4vw, 2.8rem);
+    font-weight: 800;
+    letter-spacing: -0.02em;
+    line-height: 1.2;
+    margin-bottom: 16px;
+  }
+  .hero p {
+    font-size: 1.05rem;
+    color: var(--text-secondary);
+    max-width: 580px;
+    margin: 0 auto;
+  }
+
+  /* SECTION */
+  section { padding: 56px 24px; }
+  section.alt { background: var(--bg-secondary); }
+  .section-inner { max-width: 1040px; margin: 0 auto; }
+  .section-label {
+    font-size: 0.75rem;
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--accent);
+    margin-bottom: 8px;
+  }
+  .section-title {
+    font-size: 1.6rem;
+    font-weight: 700;
+    letter-spacing: -0.015em;
+    margin-bottom: 8px;
+  }
+  .section-sub {
+    font-size: 0.95rem;
+    color: var(--text-secondary);
+    margin-bottom: 36px;
+    max-width: 560px;
+  }
+
+  /* QUICK TABLE */
+  .table-wrap { overflow-x: auto; border-radius: 10px; border: 1px solid var(--border); }
+  table { width: 100%; border-collapse: collapse; font-size: 0.88rem; }
+  thead tr { background: var(--bg-tertiary); }
+  th {
+    padding: 12px 16px; text-align: left; font-weight: 600;
+    color: var(--text-secondary); white-space: nowrap;
+    border-bottom: 1px solid var(--border);
+  }
+  td {
+    padding: 13px 16px; border-bottom: 1px solid var(--border);
+    vertical-align: top;
+  }
+  tbody tr:last-child td { border-bottom: none; }
+  tbody tr:hover { background: var(--bg-tertiary); }
+  .t-name { font-weight: 600; color: var(--text-primary); }
+  .t-name a { color: inherit; text-decoration: none; }
+  .t-name a:hover { color: var(--accent); }
+
+  /* TAGS / PILLS */
+  .pill {
+    display: inline-block; font-size: 0.72rem; font-weight: 600;
+    padding: 3px 8px; border-radius: 12px; white-space: nowrap;
+  }
+  .pill-green { background: rgba(63,185,80,0.15); color: var(--green); }
+  .pill-amber { background: rgba(240,165,0,0.15); color: var(--accent); }
+  .pill-blue  { background: rgba(88,166,255,0.15); color: var(--blue); }
+  .pill-purple{ background: rgba(188,140,255,0.15); color: var(--purple); }
+  .pill-red   { background: rgba(248,81,73,0.15); color: var(--red); }
+  .pill-gray  { background: var(--bg-tertiary); color: var(--text-secondary); }
+
+  /* PROVIDER CARDS */
+  .provider-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(290px, 1fr));
+    gap: 16px;
+  }
+  .provider-card {
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 20px;
+    transition: border-color .15s;
+  }
+  .provider-card:hover { border-color: var(--accent); }
+  .pc-header { display: flex; align-items: flex-start; gap: 12px; margin-bottom: 10px; }
+  .pc-icon { font-size: 1.6rem; line-height: 1; flex-shrink: 0; }
+  .pc-name { font-size: 1rem; font-weight: 700; color: var(--text-primary); }
+  .pc-name a { color: inherit; text-decoration: none; }
+  .pc-name a:hover { color: var(--accent); }
+  .pc-license { font-size: 0.75rem; color: var(--text-muted); }
+  .pc-desc { font-size: 0.88rem; color: var(--text-secondary); margin-bottom: 12px; }
+  .pc-tags { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 12px; }
+  .pc-best {
+    font-size: 0.82rem; color: var(--text-secondary);
+    border-top: 1px solid var(--border); padding-top: 10px;
+  }
+  .pc-best strong { color: var(--text-primary); }
+  .pc-bench {
+    font-size: 0.78rem; color: var(--text-muted);
+    margin-top: 6px;
+  }
+  .pc-bench strong { color: var(--green); }
+
+  /* USE CASE PICKER */
+  .picker-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+    gap: 16px;
+  }
+  .picker-card {
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border);
+    border-left: 3px solid var(--accent);
+    border-radius: 10px;
+    padding: 20px;
+  }
+  .picker-card.green-accent { border-left-color: var(--green); }
+  .picker-card.blue-accent  { border-left-color: var(--blue); }
+  .picker-card.purple-accent{ border-left-color: var(--purple); }
+  .picker-card.red-accent   { border-left-color: var(--red); }
+  .picker-icon { font-size: 1.5rem; margin-bottom: 8px; }
+  .picker-title { font-size: 1rem; font-weight: 700; margin-bottom: 4px; }
+  .picker-sub { font-size: 0.82rem; color: var(--text-secondary); margin-bottom: 14px; }
+  .picker-picks { list-style: none; display: flex; flex-direction: column; gap: 8px; }
+  .picker-pick {
+    display: flex; align-items: flex-start; gap: 8px;
+    font-size: 0.85rem;
+  }
+  .pick-rank {
+    flex-shrink: 0; width: 20px; height: 20px; border-radius: 50%;
+    background: var(--bg-secondary); border: 1px solid var(--border);
+    display: flex; align-items: center; justify-content: center;
+    font-size: 0.7rem; font-weight: 700; color: var(--accent);
+    margin-top: 1px;
+  }
+  .pick-name { font-weight: 600; color: var(--text-primary); }
+  .pick-why { color: var(--text-secondary); }
+
+  /* TRADEOFF TABLE */
+  .tradeoff-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+    gap: 12px;
+  }
+  .tradeoff-card {
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 16px;
+  }
+  .tradeoff-label {
+    font-size: 0.75rem; font-weight: 600; letter-spacing: 0.05em;
+    text-transform: uppercase; color: var(--text-muted); margin-bottom: 8px;
+  }
+  .tradeoff-winner {
+    font-size: 1rem; font-weight: 700; color: var(--text-primary);
+    margin-bottom: 4px;
+  }
+  .tradeoff-note { font-size: 0.8rem; color: var(--text-secondary); }
+
+  /* NOTE */
+  .note {
+    background: var(--accent-glow);
+    border: 1px solid rgba(240,165,0,0.25);
+    border-radius: 8px;
+    padding: 14px 18px;
+    font-size: 0.85rem;
+    color: var(--text-secondary);
+    margin-top: 24px;
+  }
+  .note strong { color: var(--accent); }
+
+  /* CTA */
+  .cta-strip {
+    background: var(--bg-secondary);
+    border-top: 1px solid var(--border);
+    padding: 48px 24px;
+    text-align: center;
+  }
+  .cta-strip h2 { font-size: 1.4rem; font-weight: 700; margin-bottom: 8px; }
+  .cta-strip p { color: var(--text-secondary); font-size: 0.95rem; margin-bottom: 24px; }
+  .cta-strip a {
+    display: inline-block;
+    background: var(--accent); color: #0d1117;
+    padding: 12px 28px; border-radius: 8px; font-weight: 700;
+    text-decoration: none; transition: background .15s;
+  }
+  .cta-strip a:hover { background: var(--accent-dim); }
+
+  /* RESPONSIVE */
+  @media (max-width: 640px) {
+    .hamburger { display: flex; }
+    .btn-cta { display: none; }
+    .nav-back span { display: none; }
+    .hero { padding: 40px 16px 32px; }
+    section { padding: 40px 16px; }
+    th, td { padding: 10px 12px; }
+    .provider-grid { grid-template-columns: 1fr; }
+    .picker-grid { grid-template-columns: 1fr; }
+    .tradeoff-grid { grid-template-columns: 1fr 1fr; }
+  }
+  @media (max-width: 400px) {
+    .tradeoff-grid { grid-template-columns: 1fr; }
+  }
+</style>
+</head>
+<body>
+
+<nav>
+  <div class="nav-left">
+    <a class="nav-logo" href="../">⚡ Hermes</a>
+    <a class="nav-back" href="../">
+      <span>←</span>
+      <span>Back</span>
+    </a>
+  </div>
+  <div class="nav-right">
+    <button id="theme-toggle" aria-label="Toggle theme">🌙</button>
+    <a class="btn-cta" href="https://hermes-agent.nousresearch.com/docs/getting-started/installation">Get started →</a>
+    <button class="hamburger" id="memory-hamburger" aria-label="Open menu">
+      <span></span><span></span><span></span>
+    </button>
+  </div>
+</nav>
+
+<div id="memory-mobile-menu">
+  <a href="../">← Main site</a>
+  <a href="../eli5/">ELI5 explainer</a>
+  <a href="../models/">Model guide</a>
+  <a href="../community/">Community</a>
+  <a href="https://hermes-agent.nousresearch.com/docs/getting-started/installation" class="accent">Get started →</a>
+</div>
+
+<div class="hero">
+  <span class="hero-eyebrow">Agent memory · 2026 guide</span>
+  <h1>Which memory provider<br>should you use?</h1>
+  <p>Eight providers, one table. Hosting options, free tiers, benchmarks, and a straight pick for each major use case.</p>
+</div>
+
+<!-- QUICK REFERENCE TABLE -->
+<section id="table">
+  <div class="section-inner">
+    <div class="section-label">Quick reference</div>
+    <div class="section-title">All providers at a glance</div>
+    <p class="section-sub">Sorted by ease of getting started. Benchmarks are not directly comparable across variants.</p>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Provider</th>
+            <th>Free tier</th>
+            <th>Hosting</th>
+            <th>License</th>
+            <th>Benchmark</th>
+            <th>Best for</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td class="t-name"><a href="https://mem0.ai" target="_blank" rel="noopener">Mem0</a></td>
+            <td><span class="pill pill-green">10K adds / 1K recalls</span></td>
+            <td>Cloud + self-host</td>
+            <td><span class="pill pill-blue">Apache 2.0</span></td>
+            <td>LongMemEval-S <strong>67.6%</strong></td>
+            <td>All-around, best SDK</td>
+          </tr>
+          <tr>
+            <td class="t-name"><a href="https://www.supermemory.ai" target="_blank" rel="noopener">Supermemory</a></td>
+            <td><span class="pill pill-green">1M tokens, 10K searches</span></td>
+            <td>Cloud only</td>
+            <td><span class="pill pill-red">Proprietary</span></td>
+            <td>LongMemEval <strong>81.6%</strong></td>
+            <td>Knowledge recall, chatbots</td>
+          </tr>
+          <tr>
+            <td class="t-name"><a href="https://byterover.dev" target="_blank" rel="noopener">ByteRover</a></td>
+            <td><span class="pill pill-green">Local CLI free</span></td>
+            <td>Local + cloud</td>
+            <td><span class="pill pill-amber">Partial OSS</span></td>
+            <td>LoCoMo <strong>92.19%</strong></td>
+            <td>Coding agents, multi-hop recall</td>
+          </tr>
+          <tr>
+            <td class="t-name"><a href="https://hindsight.ai" target="_blank" rel="noopener">Hindsight</a></td>
+            <td><span class="pill pill-green">Full features local</span></td>
+            <td>Local + cloud</td>
+            <td><span class="pill pill-blue">MIT</span></td>
+            <td>—</td>
+            <td>Privacy-first, local agents</td>
+          </tr>
+          <tr>
+            <td class="t-name"><a href="https://holographic.ai" target="_blank" rel="noopener">Holographic</a></td>
+            <td><span class="pill pill-green">Everything free</span></td>
+            <td>Cloud</td>
+            <td><span class="pill pill-blue">MIT</span></td>
+            <td>—</td>
+            <td>Zero cost, quick start</td>
+          </tr>
+          <tr>
+            <td class="t-name"><a href="https://openviking.ai" target="_blank" rel="noopener">OpenViking</a></td>
+            <td><span class="pill pill-green">Everything free</span></td>
+            <td>Self-host only</td>
+            <td><span class="pill pill-amber">AGPL-3.0</span></td>
+            <td>—</td>
+            <td>Air-gapped / on-prem</td>
+          </tr>
+          <tr>
+            <td class="t-name"><a href="https://honcho.dev" target="_blank" rel="noopener">Honcho</a></td>
+            <td><span class="pill pill-amber">$100 free credits</span></td>
+            <td>Cloud</td>
+            <td><span class="pill pill-amber">AGPL-3.0</span></td>
+            <td>—</td>
+            <td>User modeling, personalization</td>
+          </tr>
+          <tr>
+            <td class="t-name"><a href="https://retaindb.io" target="_blank" rel="noopener">RetainDB</a></td>
+            <td><span class="pill pill-red">None</span></td>
+            <td>Cloud only</td>
+            <td><span class="pill pill-red">Proprietary</span></td>
+            <td>—</td>
+            <td>Structured data recall</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="note">
+      <strong>Benchmark note:</strong> LoCoMo (ByteRover), LongMemEval (Supermemory), and LongMemEval-S (Mem0) are different benchmarks on different tasks — not a straight ranking. Use as directional signal only. As of April 2026.
+    </div>
+  </div>
+</section>
+
+<!-- PROVIDER CARDS -->
+<section id="providers" class="alt">
+  <div class="section-inner">
+    <div class="section-label">Provider profiles</div>
+    <div class="section-title">The fast version</div>
+    <p class="section-sub">What you actually need to know about each one.</p>
+
+    <div class="provider-grid">
+
+      <div class="provider-card">
+        <div class="pc-header">
+          <div class="pc-icon">🧠</div>
+          <div>
+            <div class="pc-name"><a href="https://mem0.ai" target="_blank" rel="noopener">Mem0</a></div>
+            <div class="pc-license">Apache 2.0 · mem0ai/mem0</div>
+          </div>
+        </div>
+        <p class="pc-desc">LLM-powered memory layer. Extracts, stores, and retrieves structured facts across sessions. The most widely integrated option — first-class SDKs for Python, TypeScript, and OpenAI-compatible APIs.</p>
+        <div class="pc-tags">
+          <span class="pill pill-green">Freemium</span>
+          <span class="pill pill-blue">Cloud + self-host</span>
+          <span class="pill pill-purple">Python SDK</span>
+        </div>
+        <div class="pc-best"><strong>Best for:</strong> agents that need reliable fact recall across long conversations, teams that want a managed service without vendor lock-in.</div>
+        <div class="pc-bench">Benchmark: LongMemEval-S <strong>67.6%</strong></div>
+      </div>
+
+      <div class="provider-card">
+        <div class="pc-header">
+          <div class="pc-icon">⚡</div>
+          <div>
+            <div class="pc-name"><a href="https://www.supermemory.ai" target="_blank" rel="noopener">Supermemory</a></div>
+            <div class="pc-license">Proprietary · cloud API</div>
+          </div>
+        </div>
+        <p class="pc-desc">Optimized for search-heavy workloads. Indexes content from many sources and surfaces it via semantic search. Generous free tier (1M tokens). Core engine is closed source.</p>
+        <div class="pc-tags">
+          <span class="pill pill-green">Generous free tier</span>
+          <span class="pill pill-red">Cloud only</span>
+          <span class="pill pill-amber">Search-first</span>
+        </div>
+        <div class="pc-best"><strong>Best for:</strong> knowledge wikis, chatbots that need to surface relevant content from a large corpus.</div>
+        <div class="pc-bench">Benchmark: LongMemEval <strong>81.6%</strong> (with GPT-4o)</div>
+      </div>
+
+      <div class="provider-card">
+        <div class="pc-header">
+          <div class="pc-icon">🤖</div>
+          <div>
+            <div class="pc-name"><a href="https://byterover.dev" target="_blank" rel="noopener">ByteRover</a></div>
+            <div class="pc-license">CLI: MIT · cloud: proprietary</div>
+          </div>
+        </div>
+        <p class="pc-desc">Highest benchmark score on temporal and multi-hop reasoning. CLI is open source and runs locally for free. Cloud sync costs $19/mo. Built for coding agents that need to track context across many sessions.</p>
+        <div class="pc-tags">
+          <span class="pill pill-green">Local CLI free</span>
+          <span class="pill pill-blue">Local + cloud</span>
+          <span class="pill pill-purple">Multi-hop recall</span>
+        </div>
+        <div class="pc-best"><strong>Best for:</strong> coding agents, autonomous workflows, anything requiring multi-hop or temporal reasoning.</div>
+        <div class="pc-bench">Benchmark: LoCoMo <strong>92.19%</strong> (single-hop 95.4%, temporal 94.4%)</div>
+      </div>
+
+      <div class="provider-card">
+        <div class="pc-header">
+          <div class="pc-icon">🔒</div>
+          <div>
+            <div class="pc-name"><a href="https://hindsight.ai" target="_blank" rel="noopener">Hindsight</a></div>
+            <div class="pc-license">MIT · local + optional cloud</div>
+          </div>
+        </div>
+        <p class="pc-desc">Three-stage memory: retain (ingest), recall (retrieve), reflect (synthesize). Full features run entirely locally for free. Cloud is pay-per-token if you need sync across devices.</p>
+        <div class="pc-tags">
+          <span class="pill pill-green">Local = free</span>
+          <span class="pill pill-blue">Local + cloud</span>
+          <span class="pill pill-amber">Retain / Recall / Reflect</span>
+        </div>
+        <div class="pc-best"><strong>Best for:</strong> privacy-conscious setups, air-gapped agents, local-first development.</div>
+      </div>
+
+      <div class="provider-card">
+        <div class="pc-header">
+          <div class="pc-icon">✨</div>
+          <div>
+            <div class="pc-name"><a href="https://holographic.ai" target="_blank" rel="noopener">Holographic</a></div>
+            <div class="pc-license">MIT · cloud</div>
+          </div>
+        </div>
+        <p class="pc-desc">Completely free cloud service. MIT-licensed. Simplest possible on-ramp — no billing, no usage caps announced. Trade-off: no self-host option, limited documentation.</p>
+        <div class="pc-tags">
+          <span class="pill pill-green">100% free</span>
+          <span class="pill pill-blue">Cloud</span>
+          <span class="pill pill-gray">Low overhead</span>
+        </div>
+        <div class="pc-best"><strong>Best for:</strong> experiments, hobby projects, and anyone who needs memory working in minutes with zero cost.</div>
+      </div>
+
+      <div class="provider-card">
+        <div class="pc-header">
+          <div class="pc-icon">🏠</div>
+          <div>
+            <div class="pc-name"><a href="https://openviking.ai" target="_blank" rel="noopener">OpenViking</a></div>
+            <div class="pc-license">AGPL-3.0 · self-hosted</div>
+          </div>
+        </div>
+        <p class="pc-desc">Fully open, self-hosted only. Free to run, zero external calls. AGPL license means modifications to the server must be disclosed if distributed — fine for internal use, check before building a SaaS product on it.</p>
+        <div class="pc-tags">
+          <span class="pill pill-green">Free forever</span>
+          <span class="pill pill-amber">Self-host only</span>
+          <span class="pill pill-amber">AGPL-3.0</span>
+        </div>
+        <div class="pc-best"><strong>Best for:</strong> on-prem deployments, regulated industries, teams who need full data sovereignty.</div>
+      </div>
+
+      <div class="provider-card">
+        <div class="pc-header">
+          <div class="pc-icon">👤</div>
+          <div>
+            <div class="pc-name"><a href="https://honcho.dev" target="_blank" rel="noopener">Honcho</a></div>
+            <div class="pc-license">AGPL-3.0 · cloud</div>
+          </div>
+        </div>
+        <p class="pc-desc">Focuses on user modeling — building a structured representation of who a user is, not just what they said. "Dialect" concept distills preferences and behavior into persistent user profiles. $100 free credits to start.</p>
+        <div class="pc-tags">
+          <span class="pill pill-amber">$100 free credits</span>
+          <span class="pill pill-blue">Cloud</span>
+          <span class="pill pill-purple">User modeling</span>
+        </div>
+        <div class="pc-best"><strong>Best for:</strong> product agents that need to personalize responses, multi-user apps where each user's context matters.</div>
+      </div>
+
+      <div class="provider-card">
+        <div class="pc-header">
+          <div class="pc-icon">🗃️</div>
+          <div>
+            <div class="pc-name"><a href="https://retaindb.io" target="_blank" rel="noopener">RetainDB</a></div>
+            <div class="pc-license">Proprietary · cloud only</div>
+          </div>
+        </div>
+        <p class="pc-desc">Database-style memory with structured schema. No free tier — starts at $20/mo. Good if you need explicit control over what gets stored and how it's queried. Enterprise plans available.</p>
+        <div class="pc-tags">
+          <span class="pill pill-red">No free tier</span>
+          <span class="pill pill-red">Cloud only</span>
+          <span class="pill pill-gray">Structured schema</span>
+        </div>
+        <div class="pc-best"><strong>Best for:</strong> production apps that need structured data recall with predictable query behavior.</div>
+      </div>
+
+    </div>
+  </div>
+</section>
+
+<!-- USE CASE PICKS -->
+<section id="picks">
+  <div class="section-inner">
+    <div class="section-label">Use case recommendations</div>
+    <div class="section-title">Just tell me what to pick</div>
+    <p class="section-sub">Top choices for each situation — ranked by fit, not by sponsorship.</p>
+
+    <div class="picker-grid">
+
+      <div class="picker-card">
+        <div class="picker-icon">💻</div>
+        <div class="picker-title">Coding agents</div>
+        <p class="picker-sub">Tracking state across long sessions, referencing prior decisions, multi-hop context.</p>
+        <ul class="picker-picks">
+          <li class="picker-pick">
+            <div class="pick-rank">1</div>
+            <div><span class="pick-name">ByteRover</span> — <span class="pick-why">best benchmark score for multi-hop and temporal recall; local CLI is free</span></div>
+          </li>
+          <li class="picker-pick">
+            <div class="pick-rank">2</div>
+            <div><span class="pick-name">Mem0</span> — <span class="pick-why">mature SDK, works well with tool-calling patterns, self-hostable</span></div>
+          </li>
+        </ul>
+      </div>
+
+      <div class="picker-card green-accent">
+        <div class="picker-icon">📚</div>
+        <div class="picker-title">Knowledge wiki / RAG</div>
+        <p class="picker-sub">Indexing and retrieving from a large, growing body of content.</p>
+        <ul class="picker-picks">
+          <li class="picker-pick">
+            <div class="pick-rank">1</div>
+            <div><span class="pick-name">Supermemory</span> — <span class="pick-why">highest recall benchmark, built for search-heavy workloads</span></div>
+          </li>
+          <li class="picker-pick">
+            <div class="pick-rank">2</div>
+            <div><span class="pick-name">Mem0</span> — <span class="pick-why">solid recall + open license if you need to self-host the index</span></div>
+          </li>
+        </ul>
+      </div>
+
+      <div class="picker-card blue-accent">
+        <div class="picker-icon">⚖️</div>
+        <div class="picker-title">All-around / default pick</div>
+        <p class="picker-sub">You want something reliable that handles most cases without overhead.</p>
+        <ul class="picker-picks">
+          <li class="picker-pick">
+            <div class="pick-rank">1</div>
+            <div><span class="pick-name">Mem0</span> — <span class="pick-why">best combination of free tier, SDK quality, benchmarks, and self-host option</span></div>
+          </li>
+          <li class="picker-pick">
+            <div class="pick-rank">2</div>
+            <div><span class="pick-name">Hindsight</span> — <span class="pick-why">full features free locally, MIT, transparent architecture</span></div>
+          </li>
+        </ul>
+      </div>
+
+      <div class="picker-card purple-accent">
+        <div class="picker-icon">🆓</div>
+        <div class="picker-title">Free / open source priority</div>
+        <p class="picker-sub">You want zero cost and/or full access to the source code.</p>
+        <ul class="picker-picks">
+          <li class="picker-pick">
+            <div class="pick-rank">1</div>
+            <div><span class="pick-name">Holographic</span> — <span class="pick-why">MIT, everything free, no limits announced — fastest start</span></div>
+          </li>
+          <li class="picker-pick">
+            <div class="pick-rank">2</div>
+            <div><span class="pick-name">Hindsight</span> — <span class="pick-why">MIT, local-first, full features without a cloud account</span></div>
+          </li>
+          <li class="picker-pick">
+            <div class="pick-rank">3</div>
+            <div><span class="pick-name">OpenViking</span> — <span class="pick-why">AGPL, self-hosted, no external calls at all</span></div>
+          </li>
+        </ul>
+      </div>
+
+      <div class="picker-card red-accent">
+        <div class="picker-icon">🔐</div>
+        <div class="picker-title">Privacy / on-prem</div>
+        <p class="picker-sub">Data cannot leave your infrastructure. No cloud calls.</p>
+        <ul class="picker-picks">
+          <li class="picker-pick">
+            <div class="pick-rank">1</div>
+            <div><span class="pick-name">OpenViking</span> — <span class="pick-why">self-host only, no external dependencies, AGPL</span></div>
+          </li>
+          <li class="picker-pick">
+            <div class="pick-rank">2</div>
+            <div><span class="pick-name">Hindsight</span> — <span class="pick-why">full local mode, MIT, no cloud required</span></div>
+          </li>
+          <li class="picker-pick">
+            <div class="pick-rank">3</div>
+            <div><span class="pick-name">Mem0</span> — <span class="pick-why">self-host option with on-prem enterprise plan for full control</span></div>
+          </li>
+        </ul>
+      </div>
+
+      <div class="picker-card">
+        <div class="picker-icon">🏢</div>
+        <div class="picker-title">Enterprise / production</div>
+        <p class="picker-sub">SSO, audit logs, SLA, on-prem support, no open-source copyleft risk.</p>
+        <ul class="picker-picks">
+          <li class="picker-pick">
+            <div class="pick-rank">1</div>
+            <div><span class="pick-name">Mem0</span> — <span class="pick-why">Apache 2.0, on-prem tier, SSO, audit — covers the checklist</span></div>
+          </li>
+          <li class="picker-pick">
+            <div class="pick-rank">2</div>
+            <div><span class="pick-name">RetainDB</span> — <span class="pick-why">structured schema, enterprise plan, proprietary (no copyleft)</span></div>
+          </li>
+        </ul>
+      </div>
+
+    </div>
+  </div>
+</section>
+
+<!-- TRADEOFF SNAPSHOT -->
+<section id="tradeoffs" class="alt">
+  <div class="section-inner">
+    <div class="section-label">Tradeoff snapshot</div>
+    <div class="section-title">Best in class by axis</div>
+    <p class="section-sub">If one dimension matters most, here's who wins it.</p>
+
+    <div class="tradeoff-grid">
+      <div class="tradeoff-card">
+        <div class="tradeoff-label">Benchmark score</div>
+        <div class="tradeoff-winner">ByteRover</div>
+        <div class="tradeoff-note">92.2% on LoCoMo — multi-hop and temporal recall</div>
+      </div>
+      <div class="tradeoff-card">
+        <div class="tradeoff-label">Free tier value</div>
+        <div class="tradeoff-winner">Supermemory</div>
+        <div class="tradeoff-note">1M tokens + 10K searches/mo — most generous</div>
+      </div>
+      <div class="tradeoff-card">
+        <div class="tradeoff-label">Easiest to start</div>
+        <div class="tradeoff-winner">Holographic</div>
+        <div class="tradeoff-note">MIT, cloud, no billing setup, everything free</div>
+      </div>
+      <div class="tradeoff-card">
+        <div class="tradeoff-label">SDK + integrations</div>
+        <div class="tradeoff-winner">Mem0</div>
+        <div class="tradeoff-note">Python, TS, OpenAI-compat — most mature ecosystem</div>
+      </div>
+      <div class="tradeoff-card">
+        <div class="tradeoff-label">Privacy / self-host</div>
+        <div class="tradeoff-winner">OpenViking</div>
+        <div class="tradeoff-note">Self-host only, zero external calls</div>
+      </div>
+      <div class="tradeoff-card">
+        <div class="tradeoff-label">User modeling</div>
+        <div class="tradeoff-winner">Honcho</div>
+        <div class="tradeoff-note">Builds a structured "dialect" per user over time</div>
+      </div>
+      <div class="tradeoff-card">
+        <div class="tradeoff-label">Open license</div>
+        <div class="tradeoff-winner">Mem0 / Hindsight</div>
+        <div class="tradeoff-note">Apache 2.0 and MIT — no copyleft, commercial-safe</div>
+      </div>
+      <div class="tradeoff-card">
+        <div class="tradeoff-label">Cheapest paid tier</div>
+        <div class="tradeoff-winner">Mem0 / Supermemory</div>
+        <div class="tradeoff-note">Both $19/mo — ByteRover Pro also $19/mo</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<div class="cta-strip">
+  <h2>Ready to add memory to Hermes?</h2>
+  <p>Follow the docs to connect your chosen provider in a few lines of config.</p>
+  <a href="https://hermes-agent.nousresearch.com/docs/user-guide/features/memory-providers">Memory provider docs →</a>
+</div>
+
+<script>
+  // Theme
+  var themeToggle = document.getElementById('theme-toggle');
+  function setTheme(t) {
+    document.documentElement.setAttribute('data-theme', t);
+    localStorage.setItem('theme', t);
+    themeToggle.textContent = t === 'light' ? '🌙' : '☀️';
+  }
+  setTheme(localStorage.getItem('theme') || 'dark');
+  themeToggle.addEventListener('click', function() {
+    setTheme(document.documentElement.getAttribute('data-theme') === 'dark' ? 'light' : 'dark');
+  });
+
+  // Hamburger
+  var ham = document.getElementById('memory-hamburger');
+  var menu = document.getElementById('memory-mobile-menu');
+  ham.addEventListener('click', function(e) {
+    e.stopPropagation();
+    ham.classList.toggle('open');
+    menu.classList.toggle('open');
+  });
+  document.addEventListener('click', function(e) {
+    if (!menu.contains(e.target) && e.target !== ham) {
+      ham.classList.remove('open');
+      menu.classList.remove('open');
+    }
+  });
+  menu.querySelectorAll('a').forEach(function(a) {
+    a.addEventListener('click', function() {
+      ham.classList.remove('open');
+      menu.classList.remove('open');
+    });
+  });
+</script>
+</body>
+</html>
