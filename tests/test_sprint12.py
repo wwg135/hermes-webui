@@ -3,7 +3,7 @@ Sprint 12 Tests: settings panel, session pinning, session import, SSE reconnect.
 """
 import json, pathlib, urllib.error, urllib.request, urllib.parse
 
-from tests._pytest_port import BASE
+from tests._pytest_port import BASE, TEST_DEFAULT_MODEL
 
 
 def get(path):
@@ -40,8 +40,6 @@ def test_settings_get_returns_defaults():
 
 def test_default_model_updates_hermes_config():
     """POST /api/default-model updates the effective Hermes default model."""
-    original, _ = get("/api/models")
-    original_model = original.get("default_model") or ""
     try:
         d, status = post("/api/default-model", {"model": "anthropic/claude-sonnet-4.6"})
         assert status == 200
@@ -50,9 +48,9 @@ def test_default_model_updates_hermes_config():
         # Both should resolve to the same model (may differ in prefix normalization)
         assert 'claude-sonnet-4.6' in d2['default_model']
     finally:
-        # Always restore — regardless of test ordering or failures
-        if original_model:
-            post("/api/default-model", {"model": original_model})
+        # Always restore to the conftest-injected default so later tests see
+        # a consistent baseline regardless of test ordering.
+        post("/api/default-model", {"model": TEST_DEFAULT_MODEL})
 
 
 def test_settings_does_not_persist_default_model():

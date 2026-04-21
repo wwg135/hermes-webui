@@ -800,6 +800,10 @@ def set_hermes_default_model(model_id: str) -> dict:
         _save_yaml_config_file(config_path, config_data)
     # Reload outside the lock — reload_config() acquires _cfg_lock itself.
     reload_config()
+    # reload_config() resyncs _cfg_mtime to the new file mtime, so the mtime
+    # check inside get_available_models() won't trigger invalidation. Drop
+    # the TTL cache explicitly so the next call recomputes with the new model.
+    invalidate_models_cache()
     return get_available_models()
 
 
