@@ -641,6 +641,30 @@ function _syncCtxIndicator(usage){
   if(center) center.textContent=hasCtxWindow?String(pct):'\u00b7';
   el.classList.toggle('ctx-mid',pct>50&&pct<=75);
   el.classList.toggle('ctx-high',pct>75);
+  // ── Compress affordance (#524) ──
+  // Show a hint in the tooltip when context usage is high so users
+  // discover /compress without having to know the slash command.
+  const compressWrap=$('ctxTooltipCompress');
+  const compressBtn=$('ctxCompressBtn');
+  if(compressWrap&&compressBtn){
+    if(pct>=75){
+      compressWrap.style.display='';
+      compressBtn.textContent=t('ctx_compress_action');
+      compressBtn.onclick=function(){
+        const ta=$('msg');
+        if(ta){ta.value='/compress ';ta.focus();autoResize();}
+      };
+    }else if(pct>=50){
+      compressWrap.style.display='';
+      compressBtn.textContent=t('ctx_compress_hint');
+      compressBtn.onclick=function(){
+        const ta=$('msg');
+        if(ta){ta.value='/compress ';ta.focus();autoResize();}
+      };
+    }else{
+      compressWrap.style.display='none';
+    }
+  }
   let label=hasCtxWindow?`Context window ${pct}% used`:`${_fmtTokens(totalTok)} tokens used`;
   if(cost) label+=` \u00b7 $${cost<0.01?cost.toFixed(4):cost.toFixed(2)}`;
   el.setAttribute('aria-label',label);
