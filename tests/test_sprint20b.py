@@ -236,9 +236,9 @@ def test_ui_js_update_send_btn_function():
 
 
 def test_update_send_btn_checks_content():
-    """Composer primary action helper must check textarea value length."""
+    """updateSendBtn must check textarea value length."""
     js, _ = get_text("/static/ui.js")
-    fn_idx = js.find('function _composerHasContent')
+    fn_idx = js.find('function updateSendBtn')
     fn_end = js.find('\n}', fn_idx) + 2
     fn_body = js[fn_idx:fn_end]
     assert 'msg' in fn_body
@@ -247,9 +247,9 @@ def test_update_send_btn_checks_content():
 
 
 def test_update_send_btn_checks_pending_files():
-    """Composer primary action helper must also count attached files as content."""
+    """updateSendBtn must also show send button when files are attached."""
     js, _ = get_text("/static/ui.js")
-    fn_idx = js.find('function _composerHasContent')
+    fn_idx = js.find('function updateSendBtn')
     fn_end = js.find('\n}', fn_idx) + 2
     fn_body = js[fn_idx:fn_end]
     assert 'pendingFiles' in fn_body
