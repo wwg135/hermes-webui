@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+## [v0.50.251] — 2026-04-30
+
+### Fixed
+- **Sidebar lineage collapse now works for WebUI JSON sessions, not just imported gateway rows** — PR #1358 (v0.50.249) added the client-side lineage-collapse helper but `/api/sessions` only included `_lineage_root_id` for gateway-imported rows. WebUI JSON sessions (the common case) had no grouping key, so cross-surface continuation chains (CLI-close → WebUI continuation, or compression chains within WebUI) still rendered as separate sidebar rows. Now `/api/sessions` reads `parent_session_id` and `end_reason` from `state.db.sessions` for every WebUI session id in the sidebar payload, walks the parent chain when `end_reason in {'compression', 'cli_close'}`, and exposes `_lineage_root_id` + `_compression_segment_count`. Cycle-detected via a `seen` set; depth-bounded to 20 hops to cap pathological data. **Pre-release fix:** swapped the original full-table-scan (`SELECT id, parent_session_id, end_reason FROM sessions`) for a parameterized `WHERE id IN (...)` query that hits PRIMARY KEY + `idx_sessions_parent` — ~50× faster at 1000 rows, scales linearly. **Pre-release fix:** suppressed orphan `parent_session_id` references (parent row pruned/deleted) so the frontend's lineage helper doesn't cluster orphans into never-collapsing single-row groups. (`api/agent_sessions.py`, `api/models.py`, `tests/test_session_lineage_metadata_api.py`, `tests/test_pr1370_lineage_metadata_perf_and_orphan.py`, `tests/test_gateway_sync.py`) @dso2ng — PR #1370
+
 ## [v0.50.250] — 2026-04-30
 
 ### Fixed

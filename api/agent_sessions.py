@@ -282,8 +282,37 @@ def read_session_lineage_metadata(db_path: Path, session_ids: list[str] | set[st
             session_cols = {row[1] for row in cur.fetchall()}
             if 'parent_session_id' not in session_cols or 'end_reason' not in session_cols:
                 return {}
-            cur.execute("SELECT id, parent_session_id, end_reason FROM sessions")
-            rows = {row['id']: dict(row) for row in cur.fetchall()}
+            # Scoped fetch via PRIMARY KEY + idx_sessions_parent rather than a
+            # full table scan. The sessions table grows unbounded over time
+            # (1000+ rows is normal, 10000+ for power users), and this function
+            # runs on every sidebar refresh — a full SELECT was ~50x slower
+            # than the indexed lookup at 1000 rows and scales linearly.
+            #
+            # Fetch the wanted ids first, then chase parent_session_id chains
+            # in batches until no new ids appear. Each batch hits PRIMARY KEY
+            # so it's effectively O(N) lookups.
+            rows: dict[str, dict] = {}
+            to_fetch = set(wanted)
+            # Cap walk depth to bound worst-case query count. Real lineage
+            # chains seen in production are <10 segments; anything longer is
+            # almost certainly pathological data and not worth chasing.
+            for _hop in range(20):
+                if not to_fetch:
+                    break
+                placeholders = ','.join('?' * len(to_fetch))
+                fetch_list = list(to_fetch)
+                to_fetch = set()
+                cur.execute(
+                    f"SELECT id, parent_session_id, end_reason FROM sessions WHERE id IN ({placeholders})",
+                    fetch_list,
+                )
+                for row in cur.fetchall():
+                    rows[row['id']] = dict(row)
+                # Queue up parents we haven't fetched yet.
+                for sid in fetch_list:
+                    parent_id = rows.get(sid, {}).get('parent_session_id')
+                    if parent_id and parent_id not in rows and parent_id not in to_fetch:
+                        to_fetch.add(parent_id)
     except Exception:
         return {}
 
@@ -294,7 +323,13 @@ def read_session_lineage_metadata(db_path: Path, session_ids: list[str] | set[st
             continue
 
         parent_id = row.get('parent_session_id')
-        if parent_id:
+        # Only expose parent_session_id when the parent actually exists in
+        # state.db. Orphan references (parent row was pruned/deleted) used to
+        # leak through and the frontend would treat them as a sidebar
+        # grouping key (#1358's _sessionLineageKey falls through to
+        # parent_session_id when _lineage_root_id is missing). Caught during
+        # pre-release review of v0.50.251.
+        if parent_id and parent_id in rows:
             metadata.setdefault(sid, {})['parent_session_id'] = parent_id
 
         root_id = sid
