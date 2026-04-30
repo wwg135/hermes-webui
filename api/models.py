@@ -953,6 +953,15 @@ def get_cli_sessions() -> list:
     except ImportError:
         _cli_profile = None  # older agent -- fall back to no profile
 
+    # Memoize the cron project ID for this scan so we don't pay a lock-acquire +
+    # disk-read of projects.json per cron session in the loop below.
+    # Resolved lazily on the first cron session we encounter.
+    _cron_pid_cache = [None]  # list-as-cell so the closure can mutate
+    def _cron_pid():
+        if _cron_pid_cache[0] is None:
+            _cron_pid_cache[0] = ensure_cron_project()
+        return _cron_pid_cache[0]
+
     try:
         for row in read_importable_agent_session_rows(db_path, limit=200, log=logger, exclude_sources=None):
             sid = row['id']
@@ -991,7 +1000,7 @@ def get_cli_sessions() -> list:
                 'updated_at': raw_ts,
                 'pinned': False,
                 'archived': False,
-                'project_id': ensure_cron_project() if is_cron_session(sid, _source) else None,
+                'project_id': _cron_pid() if is_cron_session(sid, _source) else None,
                 'profile': profile,
                 'source_tag': _source,
                 'raw_source': row.get('raw_source'),
