@@ -855,6 +855,40 @@ def save_projects(projects) -> None:
     PROJECTS_FILE.write_text(json.dumps(projects, ensure_ascii=False, indent=2), encoding='utf-8')
 
 
+CRON_PROJECT_NAME = 'Cron Jobs'
+_CRON_PROJECT_LOCK = threading.Lock()
+
+
+def ensure_cron_project() -> str:
+    """Return the project_id of the system "Cron Jobs" project, creating it if needed.
+
+    Thread-safe and idempotent.  Returns a 12-char hex project_id string.
+    """
+    with _CRON_PROJECT_LOCK:
+        for p in load_projects():
+            if p.get('name') == CRON_PROJECT_NAME:
+                return p['project_id']
+        project_id = uuid.uuid4().hex[:12]
+        projects = load_projects()
+        projects.append({
+            'project_id': project_id,
+            'name': CRON_PROJECT_NAME,
+            'color': '#6366f1',
+            'created_at': time.time(),
+        })
+        save_projects(projects)
+        return project_id
+
+
+def is_cron_session(session_id: str, source_tag: str = None) -> bool:
+    """Return True if a session originates from a cron job."""
+    if source_tag == 'cron':
+        return True
+    sid = str(session_id or '')
+    return sid.startswith('cron_')
+
+
+
 def import_cli_session(
     session_id: str,
     title: str,
@@ -919,6 +953,15 @@ def get_cli_sessions() -> list:
     except ImportError:
         _cli_profile = None  # older agent -- fall back to no profile
 
+    # Memoize the cron project ID for this scan so we don't pay a lock-acquire +
+    # disk-read of projects.json per cron session in the loop below.
+    # Resolved lazily on the first cron session we encounter.
+    _cron_pid_cache = [None]  # list-as-cell so the closure can mutate
+    def _cron_pid():
+        if _cron_pid_cache[0] is None:
+            _cron_pid_cache[0] = ensure_cron_project()
+        return _cron_pid_cache[0]
+
     try:
         for row in read_importable_agent_session_rows(db_path, limit=200, log=logger, exclude_sources=None):
             sid = row['id']
@@ -957,7 +1000,7 @@ def get_cli_sessions() -> list:
                 'updated_at': raw_ts,
                 'pinned': False,
                 'archived': False,
-                'project_id': None,
+                'project_id': _cron_pid() if is_cron_session(sid, _source) else None,
                 'profile': profile,
                 'source_tag': _source,
                 'raw_source': row.get('raw_source'),

@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+## [v0.50.247] — 2026-04-30
+
+### Added
+- **Cron job sessions auto-assigned to a dedicated "Cron Jobs" project** — sessions originating from the cron scheduler now appear in their own project group in the sidebar instead of mixed in with regular chat sessions. Detection runs against either the session's `source_tag == 'cron'` or a `cron_` ID prefix, both for live `get_cli_sessions()` calls and on `_handle_session_import_cli` import. The project is created idempotently on first cron session via `ensure_cron_project()` (thread-safe, returns the same `project_id` on every subsequent call). Locale parity across all 8 supported languages (en, es, de, zh, zh-Hant, ru, pt, ko) for the new `cron_jobs_project` key. (`api/models.py`, `api/routes.py`, `static/i18n.js`, `tests/test_1079_cron_session_project.py`) @bergeouss — PR #1345, closes #1079
+
 ## [v0.50.246] — 2026-04-30
 
 ### Added
