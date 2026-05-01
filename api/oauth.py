@@ -39,10 +39,26 @@ def _read_auth_json():
 
 
 def _write_auth_json(data):
-    """Atomically write auth.json via temp-file rename."""
+    """Atomically write auth.json via temp-file rename.
+
+    SECURITY: auth.json contains OAuth access/refresh tokens. ``tmp.replace()``
+    preserves the temp file's mode (created with the process umask, typically
+    0644 or 0664), NOT the prior auth.json mode. Without an explicit chmod,
+    tokens land world-readable on shared systems. Set 0600 BEFORE the rename
+    so there is no window where the final file is world-readable.
+    (Opus pre-release advisor finding.)
+    """
+    import os, stat
     AUTH_JSON_PATH.parent.mkdir(parents=True, exist_ok=True)
     tmp = AUTH_JSON_PATH.with_suffix('.tmp')
     tmp.write_text(json.dumps(data, indent=2, ensure_ascii=False))
+    try:
+        tmp.chmod(0o600)
+    except OSError as e:
+        # Best-effort: if chmod fails (e.g. on a filesystem that doesn't
+        # support POSIX modes), don't abort. The startup permission fixer
+        # in api.startup will sweep auth.json on the next process start.
+        logger.warning("Failed to chmod 0600 on %s: %s", tmp, e)
     tmp.replace(AUTH_JSON_PATH)
 
 

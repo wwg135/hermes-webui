@@ -1,0 +1,133 @@
+"""Regression tests for v0.50.257 Opus pre-release follow-ups (#1402 + #1415).
+
+The v0.50.257 batch had four findings on PR #1402:
+
+1. MUST-FIX (security) — `api/oauth.py::_write_auth_json` used `tmp.replace()`
+   which preserves the temp file's umask-derived mode (commonly 0644 or 0664).
+   `auth.json` contains OAuth access/refresh tokens; on shared systems those
+   tokens landed world-readable. Fix: `tmp.chmod(0o600)` BEFORE rename.
+
+2. SHOULD-FIX (defense-in-depth) — `_handle_cron_history` and
+   `_handle_cron_run_detail` accepted `job_id` as a path component without
+   validation. `Path() / "../escape"` does not normalize, mirroring the
+   rollback path-traversal vector caught in v0.50.255. Fix: regex validation
+   that rejects `/`, `..`, `.`.
+
+3. SHOULD-FIX — `_handle_cron_history` parsed `offset`/`limit` via raw
+   `int()`, so `?offset=foo` raised `ValueError` and surfaced as a generic
+   500 instead of a clean 400. Also no upper bound on `limit` (DoS via
+   `?limit=999999999`). Fix: try/except + clamp to safe ranges.
+
+4. NIT — also propagate the cron `job_id` validation regex to make the
+   pattern explicit at the parameter boundary.
+
+PR #1415 follow-up: 8 pre-existing tests in test_issue1106 and
+test_custom_provider_display_name asserted bare model IDs but #1415 changes
+the named-custom-provider IDs to `@custom:NAME:model` form when active
+provider differs. Tests updated to use `_strip_at_prefix` helper to keep
+checking the same invariant ("does model X appear in the picker") in the
+new shape.
+"""
+
+from __future__ import annotations
+
+import os
+import stat
+import sys
+import tempfile
+from pathlib import Path
+
+import pytest
+
+REPO = Path(__file__).resolve().parents[1]
+
+
+# ── 1: auth.json permission fix (chmod 0600 before rename) ───────────────────
+
+
+def test_oauth_write_auth_json_uses_chmod_0600_before_rename(monkeypatch, tmp_path):
+    """`_write_auth_json` must chmod 0600 BEFORE renaming so tokens never land
+    world-readable. The previous implementation used `tmp.replace()` which
+    preserves the temp file's umask-derived mode."""
+    sys.path.insert(0, str(REPO))
+    import api.oauth as oauth
+
+    # Point AUTH_JSON_PATH at a tmp dir
+    fake_path = tmp_path / "auth.json"
+    monkeypatch.setattr(oauth, "AUTH_JSON_PATH", fake_path)
+
+    # Set a permissive umask so default write would create 0644
+    old_umask = os.umask(0o022)
+    try:
+        oauth._write_auth_json({"credential_pool": {"openai-codex": []}})
+    finally:
+        os.umask(old_umask)
+
+    assert fake_path.exists(), "auth.json was not written"
+    mode = stat.S_IMODE(fake_path.stat().st_mode)
+    # The file must be chmod 0600 — owner read/write only.
+    assert mode == 0o600, (
+        f"auth.json permissions are {oct(mode)}, expected 0o600. "
+        f"OAuth tokens (access_token, refresh_token) live in this file. "
+        f"On shared systems, world-readable tokens are a real exposure."
+    )
+
+
+def test_oauth_write_auth_json_source_calls_chmod():
+    """Source-level pin: any future change to _write_auth_json that drops the
+    chmod call must be caught even if the runtime test above is skipped on
+    a filesystem that doesn't support POSIX modes."""
+    src = (REPO / "api" / "oauth.py").read_text(encoding="utf-8")
+    assert "tmp.chmod(0o600)" in src, (
+        "_write_auth_json must call tmp.chmod(0o600) before tmp.replace() — "
+        "without it, OAuth tokens land world-readable on shared systems."
+    )
+
+
+# ── 2: cron history job_id path-traversal validation ────────────────────────
+
+
+def test_cron_history_rejects_traversal_in_job_id():
+    """`_handle_cron_history` and `_handle_cron_run_detail` must regex-validate
+    job_id at the parameter boundary. Mirrors the rollback regex shape from
+    v0.50.255."""
+    src = (REPO / "api" / "routes.py").read_text(encoding="utf-8")
+    # Both handlers must call the validator
+    history_idx = src.find("def _handle_cron_history(")
+    detail_idx = src.find("def _handle_cron_run_detail(")
+    assert history_idx != -1, "_handle_cron_history missing"
+    assert detail_idx != -1, "_handle_cron_run_detail missing"
+
+    history_body = src[history_idx : history_idx + 1500]
+    detail_body = src[detail_idx : detail_idx + 1500]
+
+    # Both must include the regex check
+    for body, name in [(history_body, "_handle_cron_history"), (detail_body, "_handle_cron_run_detail")]:
+        assert "_re.fullmatch" in body and "[A-Za-z0-9_-]" in body, (
+            f"{name} must validate job_id via regex — without this, "
+            f"`?job_id=../<other>` enumerates sibling directory contents."
+        )
+        assert 'job_id in (".", "..")' in body, (
+            f"{name} must explicitly reject `.` and `..` in addition to the regex."
+        )
+
+
+# ── 3: int() bounds checking on offset/limit ────────────────────────────────
+
+
+def test_cron_history_clamps_offset_and_limit():
+    """`_handle_cron_history` must catch `ValueError` from int() and clamp
+    `limit` to a sane upper bound. Without this, `?offset=foo` raises a
+    ValueError that surfaces as a confusing 500 from `do_GET`'s exception
+    handler, and `?limit=999999999` would slice through unbounded glob output."""
+    src = (REPO / "api" / "routes.py").read_text(encoding="utf-8")
+    history_idx = src.find("def _handle_cron_history(")
+    body = src[history_idx : history_idx + 1500]
+    assert "(ValueError, TypeError)" in body, (
+        "_handle_cron_history must catch ValueError from int() so malformed "
+        "offset/limit return a clean 400, not a generic 500."
+    )
+    assert "min(500, int(qs.get" in body, (
+        "_handle_cron_history must clamp `limit` to a sane upper bound (500 chosen) "
+        "to prevent DoS via `?limit=999999999`."
+    )

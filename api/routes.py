@@ -3696,13 +3696,26 @@ def _handle_cron_history(handler, parsed):
     without fetching full output for every run.
     """
     from cron.jobs import OUTPUT_DIR as CRON_OUT
+    import re as _re
 
     qs = parse_qs(parsed.query)
     job_id = qs.get("job_id", [""])[0]
-    offset = int(qs.get("offset", ["0"])[0])
-    limit = int(qs.get("limit", ["50"])[0])
     if not job_id:
         return j(handler, {"error": "job_id required"}, status=400)
+    # Defense-in-depth: cron job_ids are 12-char hex from the agent's scheduler.
+    # Without validation, a job_id of "../<other>" would let an authenticated
+    # caller enumerate .md filenames in adjacent directories under CRON_OUT's
+    # parent. Mirror the rollback checkpoint id regex shape.
+    # (Opus pre-release advisor finding.)
+    if not _re.fullmatch(r"[A-Za-z0-9_-][A-Za-z0-9_.-]{0,63}", job_id) or job_id in (".", ".."):
+        return j(handler, {"error": "invalid job_id"}, status=400)
+    # Reject malformed offset/limit instead of letting int() raise ValueError
+    # and surface as a confusing 500. Clamp to safe ranges.
+    try:
+        offset = max(0, int(qs.get("offset", ["0"])[0]))
+        limit = max(1, min(500, int(qs.get("limit", ["50"])[0])))
+    except (ValueError, TypeError):
+        return j(handler, {"error": "offset and limit must be integers"}, status=400)
     out_dir = CRON_OUT / job_id
     runs = []
     total = 0
@@ -3726,12 +3739,19 @@ def _handle_cron_history(handler, parsed):
 def _handle_cron_run_detail(handler, parsed):
     """Return full content of a single cron run output file."""
     from cron.jobs import OUTPUT_DIR as CRON_OUT
+    import re as _re
 
     qs = parse_qs(parsed.query)
     job_id = qs.get("job_id", [""])[0]
     filename = qs.get("filename", [""])[0]
     if not job_id or not filename:
         return j(handler, {"error": "job_id and filename required"}, status=400)
+    # Validate job_id shape (defense-in-depth even though the resolve+is_relative_to
+    # check below catches traversal — fail-closed at the parameter boundary so
+    # malformed job_ids return a 400 from the validator rather than a 400 from
+    # the path resolver).
+    if not _re.fullmatch(r"[A-Za-z0-9_-][A-Za-z0-9_.-]{0,63}", job_id) or job_id in (".", ".."):
+        return j(handler, {"error": "invalid job_id"}, status=400)
     # Prevent path traversal — resolve and verify it stays within the job's output dir
     fpath = (CRON_OUT / job_id / filename).resolve()
     if not fpath.is_relative_to(CRON_OUT.resolve()):

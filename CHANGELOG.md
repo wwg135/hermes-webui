@@ -2,6 +2,26 @@
 
 ## [Unreleased]
 
+## [v0.50.257] — 2026-05-01
+
+### Added
+- **Cron run history + full-output viewer** (#468) — new `GET /api/crons/history?job_id=X&offset=N&limit=M` endpoint lists all output files for a job (filename + size + mtime) without loading content. New `GET /api/crons/run?job_id=X&filename=Y` returns full content + a snippet extracted from the `## Response` section. Tasks panel renders a per-job run history with click-to-expand. (`api/routes.py`, `static/panels.js`, `static/i18n.js`) @bergeouss — PR #1402, fixes #468
+
+- **Per-session toolset overrides** (#493) — new `Session.enabled_toolsets: list[str] | None` field threaded through `_run_agent_streaming`. New `POST /api/session/toolsets` endpoint validates input shape (non-empty list of non-empty strings, or null to clear). Settings panel adds a per-session toolset chip with global/custom modes. Honors the override at the streaming hot path via `_resolve_cli_toolsets`. (`api/models.py`, `api/routes.py`, `api/streaming.py`, `static/panels.js`, `static/i18n.js`, `static/index.html`, `static/style.css`, `static/ui.js`) @bergeouss — PR #1402, fixes #493
+
+- **Codex OAuth in-app device-code flow** — new `api/oauth.py` (stdlib only — no external HTTP libs). Two endpoints: `GET /api/oauth/codex/start` (initiates Codex device-code flow, returns `user_code` + `verification_uri`) and `GET /api/oauth/codex/poll?device_code=X` (SSE for polling token endpoint). Successful poll writes credentials to `~/.hermes/auth.json` under `credential_pool.openai-codex`. Onboarding wizard adds a "Sign in with ChatGPT" path. Idempotent: existing OAuth credential entries are updated in place; new ones use `uuid.uuid4().hex[:8]` with retry-on-collision (3 attempts). (`api/oauth.py`, `api/routes.py`, `static/onboarding.js`, `static/i18n.js`, `static/index.html`, `static/style.css`) @bergeouss — PR #1402
+
+### Fixed
+- **Named custom provider routing in model picker — `@custom:NAME:model` form preserved** (#557 follow-up to #1390) — when the model picker iterated `custom_providers` entries with a `name` field (e.g. `[{name: "sub2api", base_url, models: [...]}]`), the option IDs were stored as bare model strings. On chat start, the backend resolved those bare strings through the active/default provider, silently routing the request to the wrong endpoint (e.g. DeepSeek instead of the user's selected `sub2api` proxy). Now the picker prefixes IDs with `@<slug>:<model>` whenever the active provider differs from the named slug, so `_resolve_compatible_session_model_state` (added by #1390) routes through the correct named provider. The frontend `_findModelInDropdown` already strips `@provider:` prefixes during normalization, so legacy `localStorage["hermes-webui-model"]` values with bare IDs continue to resolve. 5 new tests across `test_issue1106_custom_providers_models.py`, `test_provider_mismatch.py`, `test_security_redaction.py`. (`api/config.py`) @Thanatos-Z — PR #1415
+
+### Changed (Opus pre-release advisor)
+- **`api/oauth.py::_write_auth_json` chmod 0600 BEFORE rename** — `tmp.replace()` preserves the temp file's umask-derived mode (commonly 0644 or 0664). `auth.json` contains OAuth access/refresh tokens; on shared systems those tokens landed world-readable through the temp-file→rename window. Fix sets `tmp.chmod(0o600)` before the atomic rename, with a `try/except OSError` that logs but doesn't abort if chmod fails on filesystems that don't support POSIX modes. The `api.startup::fix_credential_permissions` sweep also catches this on next process start as belt-and-suspenders. (`api/oauth.py`, `tests/test_v050257_opus_followups.py`)
+
+- **`_handle_cron_history` and `_handle_cron_run_detail` regex-validate `job_id`** — the `_checkpoint_root() / ws_hash / checkpoint` path-traversal vector caught in v0.50.255 (#1405) had a sibling here: `CRON_OUT / job_id / *.md`. `Path() / "../escape"` does NOT normalize. While `_handle_cron_run_detail` had a downstream `is_relative_to(CRON_OUT.resolve())` check, `_handle_cron_history` didn't. New regex `^[A-Za-z0-9_-][A-Za-z0-9_.-]{0,63}$` with explicit `.`/`..` rejection at the parameter boundary. Mirrors the rollback fix shape. (`api/routes.py`, `tests/test_v050257_opus_followups.py`)
+
+- **`_handle_cron_history` clamps `offset` and `limit`** — raw `int(qs.get("offset", ["0"])[0])` raised `ValueError` on `?offset=foo` and surfaced as a generic 500. No upper bound on `limit` either. Now wrapped in `try/except (ValueError, TypeError)` returning a 400 on bad input, and `limit` clamped to `[1, 500]`. (`api/routes.py`)
+
+
 ## [v0.50.256] — 2026-05-01
 
 ### Fixed
