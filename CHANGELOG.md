@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+### Changed
+- **Composer footer: hide session-toolsets chip temporarily** — the per-session toolsets restriction chip (introduced in #493) made the composer footer too cramped on narrow widths once it was sharing space with model, reasoning, profile, and context indicators. Hidden via `_applyToolsetsChip()` setting `display:none` on the wrap; the underlying state and `/api/session/toolsets` endpoint still work, so any cron job or scripted client that relies on `enabled_toolsets` continues unaffected. To be revisited when the footer layout is redesigned (#1430). (`static/ui.js`)
+
 ## [v0.50.260] — 2026-05-01
 
 ### Fixed

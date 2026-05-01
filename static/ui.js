@@ -928,7 +928,10 @@ function _applyToolsetsChip(toolsets) {
   const label = $('composerToolsetsLabel');
   const chip = $('composerToolsetsChip');
   if (!wrap || !label) return;
-  wrap.style.display = '';
+  // Temporarily hidden — composer footer is too cramped (#1430). State is still
+  // tracked so /api/session/toolsets continues to work; just the chip UI is hidden
+  // until we redesign the footer layout.
+  wrap.style.display = 'none';
   const hasCustom = Array.isArray(toolsets) && toolsets.length > 0;
   if (hasCustom) {
     label.textContent = toolsets.join(', ');
