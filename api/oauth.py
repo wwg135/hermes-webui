@@ -5,11 +5,15 @@ Credentials are stored in ~/.hermes/auth.json under the credential_pool.
 """
 
 import json
+import logging
 import time
+import uuid
 import urllib.request
 import urllib.parse
 import urllib.error
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 AUTH_JSON_PATH = Path.home() / ".hermes" / "auth.json"
 
@@ -28,7 +32,8 @@ def _read_auth_json():
     if AUTH_JSON_PATH.exists():
         try:
             return json.loads(AUTH_JSON_PATH.read_text())
-        except Exception:
+        except json.JSONDecodeError:
+            logger.warning("auth.json is corrupted — returning empty dict to prevent data loss")
             return {}
     return {}
 
@@ -135,26 +140,27 @@ def _save_codex_credentials(token_data):
 
     # Check if an oauth_device entry already exists (update in place)
     updated = False
+    _now_iso = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     for entry in pool["openai-codex"]:
         if entry.get("source") == "oauth_device":
             entry["access_token"] = token_data.get("access_token", "")
             entry["refresh_token"] = token_data.get("refresh_token", "")
             entry["auth_type"] = "oauth"
-            entry["updated_at"] = time.time()
+            entry["updated_at"] = _now_iso
             updated = True
             break
 
     if not updated:
         pool["openai-codex"].append({
-            "id": "codex-oauth-" + str(int(time.time()))[-6:],
+            "id": "codex-oauth-" + uuid.uuid4().hex[:8],
             "label": "Codex OAuth",
             "auth_type": "oauth",
             "source": "oauth_device",
             "access_token": token_data.get("access_token", ""),
             "refresh_token": token_data.get("refresh_token", ""),
             "priority": 1,
-            "created_at": time.time(),
+            "created_at": _now_iso,
         })
 
-    auth["updated_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    auth["updated_at"] = _now_iso
     _write_auth_json(auth)

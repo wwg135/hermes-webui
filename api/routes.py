@@ -3400,7 +3400,7 @@ def _handle_cron_history(handler, parsed):
     runs = []
     total = 0
     if out_dir.exists():
-        all_files = sorted(out_dir.glob("*.md"), reverse=True)
+        all_files = sorted(out_dir.glob("*.md"), key=lambda f: f.stat().st_mtime, reverse=True)
         total = len(all_files)
         page = all_files[offset:offset + limit]
         for f in page:
@@ -3425,10 +3425,10 @@ def _handle_cron_run_detail(handler, parsed):
     filename = qs.get("filename", [""])[0]
     if not job_id or not filename:
         return j(handler, {"error": "job_id and filename required"}, status=400)
-    # Prevent path traversal
-    if "/" in filename or "\\" in filename or ".." in filename:
+    # Prevent path traversal — resolve and verify it stays within the job's output dir
+    fpath = (CRON_OUT / job_id / filename).resolve()
+    if not fpath.is_relative_to(CRON_OUT.resolve()):
         return j(handler, {"error": "invalid filename"}, status=400)
-    fpath = CRON_OUT / job_id / filename
     if not fpath.exists():
         return j(handler, {"error": "run not found"}, status=404)
     try:
@@ -3441,7 +3441,15 @@ def _handle_cron_run_detail(handler, parsed):
 
 
 def _cron_output_snippet(text: str, limit: int = 600) -> str:
-    """Extract the response body from a cron output .md file for preview."""
+    """Extract the response body from a cron output .md file for preview.
+
+    Contract: cron output files use markdown front-matter followed by a
+    ``## Response`` (or ``# Response``) heading that marks the start of the
+    agent's reply.  This function locates that heading and returns everything
+    after it (up to *limit* chars).  If no heading is found the entire text
+    is returned — callers should be aware that front-matter fields (model,
+    timestamp, …) may appear in the snippet.
+    """
     lines = text.split("\n")
     response_idx = -1
     for i, line in enumerate(lines):
@@ -3463,7 +3471,7 @@ def _handle_cron_output(handler, parsed):
     out_dir = CRON_OUT / job_id
     outputs = []
     if out_dir.exists():
-        files = sorted(out_dir.glob("*.md"), reverse=True)[:limit]
+        files = sorted(out_dir.glob("*.md"), key=lambda f: f.stat().st_mtime, reverse=True)[:limit]
         for f in files:
             try:
                 txt = f.read_text(encoding="utf-8", errors="replace")
