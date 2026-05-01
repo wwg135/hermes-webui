@@ -1711,6 +1711,11 @@ def handle_post(handler, parsed) -> bool:
             require(body, "session_id")
         except ValueError as e:
             return bad(handler, str(e))
+        # Reject non-string session_id explicitly so the failure surfaces as a
+        # 400 instead of a generic 500 from get_session() raising TypeError.
+        # (Opus pre-release follow-up.)
+        if not isinstance(body["session_id"], str):
+            return bad(handler, "session_id must be a string")
         try:
             source = get_session(body["session_id"])
         except KeyError:
@@ -1722,6 +1727,12 @@ def handle_post(handler, parsed) -> bool:
                 keep_count = int(keep_count)
             except (ValueError, TypeError):
                 return bad(handler, "keep_count must be an integer")
+            # Negative slice (`messages[:-N]`) returns "all but last N", which
+            # is a confusing fork semantic. Reject explicitly so the user
+            # doesn't accidentally fork a session with the tail truncated when
+            # they meant to copy the prefix. (Opus pre-release follow-up.)
+            if keep_count < 0:
+                return bad(handler, "keep_count must be non-negative")
 
         custom_title = body.get("title")
         if custom_title:
