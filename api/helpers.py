@@ -170,7 +170,18 @@ def _build_redact_fn():
     return _combined_redact
 
 
-_redact_text = _build_redact_fn()
+_redact_fn_cached = _build_redact_fn()
+
+
+def _redact_text(text: str) -> str:
+    """Redact sensitive text from API responses. Respects api_redact_enabled setting."""
+    if not isinstance(text, str) or not text:
+        return text
+    from api.config import load_settings
+    settings = load_settings()
+    if not settings.get("api_redact_enabled", True):
+        return text
+    return _redact_fn_cached(text)
 
 
 def _redact_value(v):

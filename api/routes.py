@@ -842,6 +842,102 @@ button:hover{background:rgba(124,185,255,.25)}
 <script src="/static/login.js"></script>
 </body></html>"""
 
+# ── Insights endpoint ──────────────────────────────────────────────────────────
+
+def _handle_insights(handler, parsed) -> bool:
+    """Return usage analytics from local WebUI session data."""
+    import collections
+    import time as _time
+
+    query = parse_qs(parsed.query)
+    try:
+        days = min(max(int(query.get("days", ["30"])[0]), 1), 365)
+    except (ValueError, TypeError):
+        days = 30
+
+    now = _time.time()
+    cutoff = now - (days * 86400)
+
+    # Walk session index (fast, no full JSON parse)
+    sessions_data = []
+    idx_path = SESSION_DIR / "_index.json"
+    if idx_path.exists():
+        try:
+            idx = json.loads(idx_path.read_text(encoding="utf-8"))
+        except Exception:
+            idx = []
+    else:
+        idx = []
+
+    for entry in idx:
+        created = entry.get("created_at", 0) or 0
+        updated = entry.get("updated_at", 0) or 0
+        # Session is relevant if it was created or updated within the window
+        if max(created, updated) < cutoff:
+            continue
+        sessions_data.append(entry)
+
+    # Aggregate
+    total_sessions = len(sessions_data)
+    total_messages = 0
+    total_input_tokens = 0
+    total_output_tokens = 0
+    total_cost = 0.0
+    model_counts = collections.Counter()
+    # Activity by day of week (0=Mon .. 6=Sun)
+    dow_activity = collections.Counter()
+    # Activity by hour of day (0-23)
+    hod_activity = collections.Counter()
+
+    for s in sessions_data:
+        total_messages += max(s.get("message_count", 0) or 0, 0)
+        total_input_tokens += max(s.get("input_tokens", 0) or 0, 0)
+        total_output_tokens += max(s.get("output_tokens", 0) or 0, 0)
+        cost = s.get("estimated_cost")
+        if cost is not None:
+            try:
+                total_cost += float(cost)
+            except (ValueError, TypeError):
+                pass
+        model = s.get("model") or "unknown"
+        if model:
+            model_counts[model] += 1
+        # Activity patterns
+        ts = s.get("updated_at", s.get("created_at", 0)) or 0
+        if ts:
+            try:
+                dt = _time.localtime(ts)
+                dow_activity[dt.tm_wday] += 1
+                hod_activity[dt.tm_hour] += 1
+            except Exception:
+                pass
+
+    # Build model breakdown
+    models_breakdown = []
+    for model, count in model_counts.most_common():
+        models_breakdown.append({"model": model, "sessions": count})
+
+    # Day-of-week labels
+    dow_labels = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+    dow_data = [{"day": dow_labels[i], "sessions": dow_activity.get(i, 0)} for i in range(7)]
+
+    # Hour-of-day data
+    hod_data = [{"hour": h, "sessions": hod_activity.get(h, 0)} for h in range(24)]
+
+    return j(handler, {
+        "period_days": days,
+        "total_sessions": total_sessions,
+        "total_messages": total_messages,
+        "total_input_tokens": total_input_tokens,
+        "total_output_tokens": total_output_tokens,
+        "total_tokens": total_input_tokens + total_output_tokens,
+        "total_cost": round(total_cost, 6),
+        "models": models_breakdown,
+        "activity_by_day": dow_data,
+        "activity_by_hour": hod_data,
+    })
+
+
 # ── GET routes ────────────────────────────────────────────────────────────────
 
 
@@ -943,6 +1039,10 @@ def handle_get(handler, parsed) -> bool:
             handler.send_response(204)
             handler.end_headers()
         return True
+
+    # ── Insights ──
+    if parsed.path == "/api/insights":
+        return _handle_insights(handler, parsed)
 
     if parsed.path == "/health":
         with STREAMS_LOCK:
@@ -1428,10 +1528,40 @@ def handle_get(handler, parsed) -> bool:
     if parsed.path == "/api/mcp/servers":
         return _handle_mcp_servers_list(handler)
 
+    # ── Checkpoints / Rollback (GET) ──
+    if parsed.path == "/api/rollback/list":
+        qs = parse_qs(parsed.query)
+        workspace = qs.get("workspace", [""])[0]
+        if not workspace:
+            return bad(handler, "workspace query parameter is required")
+        try:
+            from api.rollback import list_checkpoints
+            return j(handler, list_checkpoints(workspace))
+        except ValueError as e:
+            return bad(handler, str(e))
+        except Exception as e:
+            logger.exception("rollback/list failed")
+            return bad(handler, str(e), status=500)
+
+    if parsed.path == "/api/rollback/diff":
+        qs = parse_qs(parsed.query)
+        workspace = qs.get("workspace", [""])[0]
+        checkpoint = qs.get("checkpoint", [""])[0]
+        if not workspace or not checkpoint:
+            return bad(handler, "workspace and checkpoint query parameters are required")
+        try:
+            from api.rollback import get_checkpoint_diff
+            return j(handler, get_checkpoint_diff(workspace, checkpoint))
+        except ValueError as e:
+            return bad(handler, str(e))
+        except Exception as e:
+            logger.exception("rollback/diff failed")
+            return bad(handler, str(e), status=500)
+
     return False  # 404
 
 
-# ── POST routes ───────────────────────────────────────────────────────────────
+# ── GET route helpers
 
 
 def handle_post(handler, parsed) -> bool:
@@ -2288,6 +2418,23 @@ def handle_post(handler, parsed) -> bool:
         handler.end_headers()
         handler.wfile.write(json.dumps({"ok": True}).encode())
         return True
+
+    # ── Checkpoints / Rollback (POST) ──
+    if parsed.path == "/api/rollback/restore":
+        if not body:
+            return bad(handler, "request body is required")
+        workspace = body.get("workspace", "")
+        checkpoint = body.get("checkpoint", "")
+        if not workspace or not checkpoint:
+            return bad(handler, "workspace and checkpoint are required")
+        try:
+            from api.rollback import restore_checkpoint
+            return j(handler, restore_checkpoint(workspace, checkpoint))
+        except ValueError as e:
+            return bad(handler, str(e))
+        except Exception as e:
+            logger.exception("rollback/restore failed")
+            return bad(handler, str(e), status=500)
 
     return False  # 404
 

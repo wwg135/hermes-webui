@@ -1211,16 +1211,22 @@ function _sessionTimeBucketLabel(timestampMs, nowMs) {
   return t('session_time_bucket_older');
 }
 
-function _sessionLineageKey(s){
+function _sessionLineageKey(s, sessionIdsInList){
   if(!s||!s.session_id) return null;
+  // If parent_session_id points to another session in the current list,
+  // this is a subagent child — don't collapse it into lineage (#494).
+  if(s.parent_session_id && sessionIdsInList && sessionIdsInList.has(s.parent_session_id)){
+    return null;
+  }
   return s._lineage_root_id || s.lineage_root_id || s.parent_session_id || null;
 }
 
 function _collapseSessionLineageForSidebar(sessions){
   const result=[];
+  const sessionIdsInList=new Set((sessions||[]).map(s=>s.session_id));
   const groups=new Map();
   for(const s of sessions||[]){
-    const key=_sessionLineageKey(s);
+    const key=_sessionLineageKey(s, sessionIdsInList);
     if(!key){result.push(s);continue;}
     if(!groups.has(key)) groups.set(key,[]);
     groups.get(key).push(s);
@@ -1256,6 +1262,23 @@ function renderSessionListFromCache(){
   // Filter archived unless toggle is on
   const sessionsRaw=_showArchived?projectFiltered:projectFiltered.filter(s=>!s.archived);
   const sessions=_collapseSessionLineageForSidebar(sessionsRaw);
+  // Build parent→children map for subagent tree (#494).
+  // Only children whose parent exists in the current (post-collapse) list are grouped.
+  const _sessionIdsInList=new Set(sessions.map(s=>s.session_id));
+  const _parentChildrenMap=new Map();
+  const _topLevelSessions=[];
+  for(const s of sessions){
+    if(s.parent_session_id && _sessionIdsInList.has(s.parent_session_id)){
+      if(!_parentChildrenMap.has(s.parent_session_id)) _parentChildrenMap.set(s.parent_session_id,[]);
+      _parentChildrenMap.get(s.parent_session_id).push(s);
+    } else {
+      _topLevelSessions.push(s);
+    }
+  }
+  // Collapse state for subagent tree groups — persisted in localStorage (#494)
+  let _treeCollapsed={};
+  try{_treeCollapsed=JSON.parse(localStorage.getItem('hermes-tree-collapsed')||'{}');}catch(e){}
+  const _saveTreeCollapsed=()=>{try{localStorage.setItem('hermes-tree-collapsed',JSON.stringify(_treeCollapsed));}catch(e){}};
   const archivedCount=projectFiltered.filter(s=>s.archived).length;
   const list=$('sessionList');list.innerHTML='';
   // Batch select bar (when in select mode)
@@ -1347,7 +1370,7 @@ function renderSessionListFromCache(){
     empty.textContent='No sessions in this project yet.';
     list.appendChild(empty);
   }
-  const orderedSessions=[...sessions].sort((a,b)=>_sessionTimestampMs(b)-_sessionTimestampMs(a));
+  const orderedSessions=[..._topLevelSessions].sort((a,b)=>_sessionTimestampMs(b)-_sessionTimestampMs(a));
   // Separate pinned from unpinned
   const pinned=orderedSessions.filter(s=>s.pinned);
   const unpinned=orderedSessions.filter(s=>!s.pinned);
@@ -1393,7 +1416,47 @@ function renderSessionListFromCache(){
       _saveCollapsed();
     };
     wrapper.appendChild(hdr);
-    for(const s of g.items){ body.appendChild(_renderOneSession(s, Boolean(g.isPinned))); }
+    for(const s of g.items){
+      const parentEl=_renderOneSession(s, Boolean(g.isPinned));
+      body.appendChild(parentEl);
+      // Render subagent children as indented tree (#494)
+      const children=_parentChildrenMap.get(s.session_id);
+      if(children&&children.length){
+        parentEl.classList.add('session-parent');
+        const treeCaret=document.createElement('span');
+        treeCaret.className='session-tree-caret';
+        treeCaret.textContent='\u25B8'; // right-pointing triangle (collapsed)
+        treeCaret.title=t('subagent_children');
+        parentEl.querySelector('.session-title-row').prepend(treeCaret);
+        const childCount=children.length;
+        const childBadge=document.createElement('span');
+        childBadge.className='session-tree-badge';
+        childBadge.textContent=childCount;
+        childBadge.title=t('subagent_children');
+        parentEl.querySelector('.session-title-row').appendChild(childBadge);
+        const isCollapsed=_treeCollapsed[s.session_id]!==false; // collapsed by default
+        const childContainer=document.createElement('div');
+        childContainer.className='session-tree-children';
+        if(isCollapsed){childContainer.style.display='none';treeCaret.classList.add('collapsed');}
+        else{treeCaret.classList.remove('collapsed');treeCaret.textContent='\u25BE';}
+        const sortedChildren=[...children].sort((a,b)=>_sessionTimestampMs(b)-_sessionTimestampMs(a));
+        for(const child of sortedChildren){
+          const childEl=_renderOneSession(child, Boolean(g.isPinned));
+          childEl.classList.add('session-tree-child');
+          childContainer.appendChild(childEl);
+        }
+        body.appendChild(childContainer);
+        treeCaret.onclick=(e)=>{
+          e.stopPropagation();
+          const hidden=childContainer.style.display==='none';
+          childContainer.style.display=hidden?'':'none';
+          treeCaret.textContent=hidden?'\u25BE':'\u25B8';
+          treeCaret.classList.toggle('collapsed',!hidden);
+          _treeCollapsed[s.session_id]=!hidden;
+          _saveTreeCollapsed();
+        };
+      }
+    }
     wrapper.appendChild(body);
     list.appendChild(wrapper);
   }

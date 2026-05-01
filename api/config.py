@@ -2232,6 +2232,7 @@ _SETTINGS_DEFAULTS = {
     "notifications_enabled": False,  # browser notification when tab is in background
     "show_thinking": True,  # show/hide thinking/reasoning blocks in chat view
     "simplified_tool_calling": True,  # group tools/thinking into one quiet activity disclosure
+    "api_redact_enabled": True,  # redact sensitive data (API keys, secrets) from API responses
     "sidebar_density": "compact",  # compact | detailed
     "auto_title_refresh_every": "0",  # adaptive title refresh: 0=off, 5/10/20=every N exchanges
     "busy_input_mode": "queue",  # behavior when sending while agent is running: queue | interrupt | steer
@@ -2349,6 +2350,7 @@ _SETTINGS_BOOL_KEYS = {
     "notifications_enabled",
     "show_thinking",
     "simplified_tool_calling",
+    "api_redact_enabled",
 }
 # Language codes are validated as short alphanumeric BCP-47-like tags (e.g. 'en', 'zh', 'fr')
 _SETTINGS_LANG_RE = __import__("re").compile(r"^[a-zA-Z]{2,10}(-[a-zA-Z0-9]{2,8})?$")
