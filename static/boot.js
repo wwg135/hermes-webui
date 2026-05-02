@@ -808,6 +808,18 @@ $('msg').addEventListener('input',()=>{
     hideCmdDropdown();
   }
 });
+// Track IME composition for East Asian input. Safari fires the committing
+// keydown AFTER compositionend with isComposing=false, so we also keep a
+// manual flag and reset it on the next tick to swallow that trailing Enter.
+// Also reset on blur so the flag can never get stuck in a true state if
+// compositionend never fires (focus loss with some IME implementations).
+let _imeComposing=false;
+(()=>{const _c=$('msg');if(!_c)return;
+  _c.addEventListener('compositionstart',()=>{_imeComposing=true;});
+  _c.addEventListener('compositionend',()=>{setTimeout(()=>{_imeComposing=false;},0);});
+  _c.addEventListener('blur',()=>{_imeComposing=false;});
+})();
+function _isImeEnter(e){return e.isComposing||e.keyCode===229||_imeComposing;}
 $('msg').addEventListener('keydown',e=>{
   // Autocomplete navigation when dropdown is open
   const dd=$('cmdDropdown');
@@ -818,7 +830,7 @@ $('msg').addEventListener('keydown',e=>{
     if(e.key==='Tab'){e.preventDefault();selectCmdDropdownItem();return;}
     if(e.key==='Escape'){e.preventDefault();hideCmdDropdown();return;}
     if(e.key==='Enter'&&!e.shiftKey){
-      if(e.isComposing){return;}
+      if(_isImeEnter(e)){return;}
       e.preventDefault();
       selectCmdDropdownItem();
       return;
@@ -830,7 +842,7 @@ $('msg').addEventListener('keydown',e=>{
   // The 'ctrl+enter' setting also uses this behavior (Enter = newline).
   // Users can override in Settings by explicitly choosing 'enter' mode.
   if(e.key==='Enter'){
-    if(e.isComposing){return;}
+    if(_isImeEnter(e)){return;}
     const _mobileDefault=matchMedia('(pointer:coarse)').matches&&window._sendKey==='enter';
     if(window._sendKey==='ctrl+enter'||_mobileDefault){
       if(e.ctrlKey||e.metaKey){e.preventDefault();send();}

@@ -1,5 +1,40 @@
 # Hermes Web UI -- Changelog
 
+## [v0.50.264] — 2026-05-02
+
+### Added
+- **Japanese (`ja`) locale** (#1439) — adds `ja` as the 8th built-in UI locale, slotted between `en` and `ru` in `static/i18n.js`. 825 keys translated to natural, concise Japanese (kanji + hiragana + katakana mix; technical terms in their commonly-used Japanese form: `Cronジョブ`, `MCPサーバー`, `APIキー`, `トークン`). Translation style prefers terse 体言止め over polite forms (`保存`, `キャンセル`, `削除`) to match the brevity of the English originals. All `${var}` and `{0}`-style placeholders preserved verbatim, all 26 arrow-function values mirrored with parameter names intact. Settings → Language now lists 日本語; the existing `Object.entries(LOCALES)` discovery path picks it up automatically. The fallback chain (`_locale[key] ?? LOCALES.en[key]`) means any future English-only string still renders cleanly. **8 regression tests** in `tests/test_japanese_locale.py` pin block existence, representative translations, full key-set parity with English (zero missing, zero extra), the 8 known en-duplicates mirrored exactly, placeholder preservation, arrow-function value mirroring, and `_label: '日本語'` using actual Japanese script. (`static/i18n.js`, `tests/test_japanese_locale.py`) @snuffxxx — PR #1439
+
+### Fixed (Opus pre-release advisor)
+- **IME composition flag could get stuck if compositionend never fires** — Opus advisor caught a recoverable footgun in PR #1441's manual `_imeComposing` flag: if the user loses focus mid-composition (window blur / IME implementation quirk on older Safari WebKit), `compositionend` may never fire, leaving `_imeComposing=true` until the next composition starts AND ends. Result: Enter-to-send is silently broken until page reload. Added a `blur` listener on `#msg` that also resets the flag — cheap belt-and-suspenders against the unrecoverable stuck state. (`static/boot.js`, `tests/test_pr1441_ime_safari_guard.py`)
+
+### Fixed
+- **IME composition Enter sent message prematurely on Safari** (#1441) — the `#msg` keydown handler had an `e.isComposing` guard that swallows IME-confirming Enter on Chrome and Firefox (where the committing keydown fires before `compositionend`), but failed on Safari (where the committing keydown fires AFTER `compositionend` with `isComposing=false`). Result: Japanese/Chinese/Korean users on macOS Safari + Hermes had to copy/paste from another app because every IME-confirming Enter sent the message instead of just accepting the conversion. **Fix:** widened guard from `e.isComposing` to a `_isImeEnter(e)` helper that also checks `e.keyCode === 229` (IME virtual key on broader browser/IME combos) AND a manual `_imeComposing` flag set on `compositionstart` and reset in a `setTimeout(…, 0)` after `compositionend` (so the trailing keydown still sees `_imeComposing=true`). Helper is used in both the autocomplete-dropdown Enter path and the send-Enter path. The composition-listener IIFE null-guards `$('msg')` so login/onboarding pages without a composer don't throw. **No behavior change for non-IME users** — all three guards return falsy for normal Enter. **6 regression tests** in `tests/test_pr1441_ime_safari_guard.py` pin: helper definition + all 3 guards, compositionstart sets the flag, compositionend defers reset to next tick, blur resets to recover from missed compositionend (Opus follow-up), IIFE null-guards `$('msg')`, both Enter paths use the helper. Existing `test_ime_composition.py::test_boot_chat_enter_send_respects_ime_composition` was loosened to accept either `e.isComposing` OR `_isImeEnter(e)`. (`static/boot.js`, `tests/test_ime_composition.py`, `tests/test_pr1441_ime_safari_guard.py`) @ryan-remeo — PR #1441
+- **Markdown renderer: triple backticks mid-line corrupted downstream rendering** (#1438) —
+  The fence regex `/```([\s\S]*?)```/g` had no line anchoring. A literal triple backtick
+  appearing inside a code block's content (e.g. a regex pattern with ``` in a lookbehind,
+  a script that documents fences, embedded markdown-in-markdown) terminated the outer
+  fence at the wrong place. The leaked tail then went through bold/italic/inline-code
+  passes, eating `*` characters as italic markers and producing literal `</strong>` tags
+  in the rendered output. Reported by **Cygnus** (Discord, May 1 2026), relayed by
+  @AvidFuturist.
+
+  **Fix:** anchor all 3 fence regexes per CommonMark §4.5 — opening fence must start a
+  line (with up to 3 spaces of indent), closing fence must also start a line. Pattern:
+  `(^|\n)[ ]{0,3}\`\`\`(?:([\s\S]*?)\n)?[ ]{0,3}\`\`\`(?=\n|$)`. The `(?:...\n)?` group
+  keeps empty fences (`` ```\n``` ``) working. Patched sites:
+
+  - `static/ui.js:1559` — `renderMd()` fenced-block stash (the assistant-message renderer)
+  - `static/ui.js:66` — `_renderUserFencedBlocks()` (user-message renderer)
+  - `static/ui.js:2599` — `_stripForTTS()` (TTS speech pre-strip)
+
+  Plus the Python mirror in `tests/test_sprint16.py`. Triple backticks in the middle of
+  a line are now treated as literal text (CommonMark-conformant) and no longer break out
+  of code blocks. 20 regression tests in `tests/test_issue1438_fence_anchoring.py` cover
+  Cygnus's exact repro, inline `` ``` `` in paragraphs, partial/streaming fences, empty
+  fences, indented fences (3-space ✓, 4-space ✗), language tags, two adjacent blocks,
+  and source-level guards on all 3 patched sites.
+
 ## [v0.50.263] — 2026-05-02
 
 ### Fixed

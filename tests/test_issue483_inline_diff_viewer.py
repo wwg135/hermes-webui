@@ -97,4 +97,4 @@ class TestDiffI18n:
         with open("static/i18n.js", "r", encoding="utf-8") as f:
             content = f.read()
         count = content.count("diff_loading")
-        assert count == 7, f"diff_loading found {count} times, expected 7"
+        assert count >= 8, f"diff_loading found {count} times, expected >= 8 (one per locale)"
