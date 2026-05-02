@@ -1,9 +1,9 @@
 # Hermes Web UI -- Changelog
 
-## [Unreleased]
+## [v0.50.262] — 2026-05-02
 
 ### Fixed
-- **New-chat button (`+`) and Cmd/Ctrl+K were no-ops while the first message was streaming** (#1432, closes #1432) — the empty-session guard from #1171 (`message_count===0` → focus composer instead of creating a new session) didn't account for in-flight streams, where the user's message hasn't been merged into `s.messages` server-side yet. Clicking `+` during the first response of a brand-new session was silently dropped, so users couldn't actually start a parallel conversation. The guard now also requires `!S.busy && !S.session.active_stream_id && !S.session.pending_user_message` — the same in-flight signal already used by `_restoreSettledSession()` in `messages.js:1081`. (`static/boot.js`)
+- **New-chat button (`+`) and Cmd/Ctrl+K were no-ops while the first message was streaming** (#1432, closes #1432) — the empty-session guard from #1171 (`message_count===0` → focus composer instead of creating a new session) didn't account for in-flight streams, where the user's message hasn't been merged into `s.messages` server-side yet. Clicking `+` during the first response of a brand-new session was silently dropped, so users couldn't actually start a parallel conversation. The guard now also requires `!S.busy && !S.session.active_stream_id && !S.session.pending_user_message` — the same in-flight signal already used by `_restoreSettledSession()` in `messages.js:1081`. Reported by @Olyno. (`static/boot.js`)
 - **Profile-name field auto-capitalized typed values despite the "lowercase only" hint** (#1423, closes #1423) — the input had `autocomplete="off"` but was missing `autocapitalize="none"`, `autocorrect="off"`, and `spellcheck="false"`, so mobile keyboards (iOS Safari/WKWebView, Android Chrome) silently capitalized the first letter and desktop spellcheck could rewrite the value on blur. The form lowercases on submit, so stored data was always correct — the bug was a misleading display during typing. Same attributes added to the Base URL field for the same reason (URLs are not natural-language text). The API key field is `type="password"` and already has correct browser behavior. (`static/panels.js`)
 
 ## [v0.50.261] — 2026-05-02
