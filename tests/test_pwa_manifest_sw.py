@@ -172,6 +172,30 @@ class TestIndexHtmlIntegration:
             "injecting it into script src attributes and service worker registration"
         )
 
+    def test_index_sw_registration_uses_relative_path(self):
+        """Regression: service worker registration MUST stay relative (no leading slash).
+
+        index.html sets a dynamic <base href> via script at the top of <head>.
+        All static asset paths must be relative so that installs behind a reverse
+        proxy at a subpath (e.g. /hermes/) resolve correctly.
+
+        An absolute '/sw.js' breaks subpath mounts because the browser requests
+        <origin>/sw.js — outside the proxy mount root.  A relative 'sw.js'
+        resolves to <origin><base>/sw.js, which is correct for both root and
+        subpath installs.  See issue #1481 review feedback.
+        """
+        src = INDEX.read_text(encoding="utf-8")
+        # Must contain the relative form
+        assert "'sw.js?v=" in src, (
+            "serviceWorker.register() must use relative 'sw.js' path, "
+            "not absolute '/sw.js' — subpath mounts depend on <base href> resolution"
+        )
+        # Must NOT contain the absolute form
+        assert "'/sw.js?v=" not in src, (
+            "serviceWorker.register() must NOT use absolute '/sw.js' path — "
+            "this breaks installs behind a reverse proxy at a subpath"
+        )
+
     def test_index_has_ios_pwa_meta_tags(self):
         src = INDEX.read_text(encoding="utf-8")
         assert "apple-mobile-web-app-capable" in src, (
