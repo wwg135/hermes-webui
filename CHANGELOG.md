@@ -1,5 +1,11 @@
 # Hermes Web UI -- Changelog
 
+## Unreleased
+
+### Fixed
+
+- **Show Hermes Agent version in Settings → System** (#1606) — added `agent_version` detection for display in System settings (`~/.hermes/hermes-agent/VERSION` preferred, git describe fallback), surfaced it alongside existing `webui_version` in `GET /api/settings`, and updated the System pane badge UI with a labeled Agent pill plus graceful fallback when the agent cannot be detected.
+
 ## [v0.50.292] — 2026-05-04
 
 ### Fixed (12 PRs — multi-tab SSE + subpath routes + cross-source lineage + paste UX + 3 follow-ups)

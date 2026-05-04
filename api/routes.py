@@ -1743,8 +1743,9 @@ def handle_get(handler, parsed) -> bool:
         # Inject the running version so the UI badge stays in sync with git tags
         # without any manual release step.
         try:
-            from api.updates import WEBUI_VERSION
+            from api.updates import AGENT_VERSION, WEBUI_VERSION
             settings["webui_version"] = WEBUI_VERSION
+            settings["agent_version"] = AGENT_VERSION
         except Exception:
             pass
         return j(handler, settings)
