@@ -877,6 +877,9 @@ function attachLiveStream(activeSid, streamId, uploaded=[], options={}){
                 estimated_cost:Math.max(0,curCost-prevCost),
               };
             }
+            if(typeof d.usage.duration_seconds==='number'){
+              lastAsst._turnDuration=d.usage.duration_seconds;
+            }
           }
         }
         if(d.session.tool_calls&&d.session.tool_calls.length){

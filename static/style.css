@@ -1712,7 +1712,8 @@ body.resizing{user-select:none;cursor:col-resize;}
 .tool-call-group-summary:hover{background:var(--surface-subtle-hover);color:var(--text);}
 .tool-call-group-label{font-weight:600;color:var(--muted);}
 .tool-call-group-list{opacity:.72;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
-.tool-call-group-count{margin-left:auto;opacity:.56;font-variant-numeric:tabular-nums;}
+.tool-call-group-duration{margin-left:auto;opacity:.62;font-variant-numeric:tabular-nums;white-space:nowrap;}
+.tool-call-group-count{opacity:.56;font-variant-numeric:tabular-nums;}
 .tool-call-group-chevron{opacity:.45;display:inline-flex;transition:transform .16s ease;}
 .tool-call-group:not(.tool-call-group-collapsed) .tool-call-group-chevron{transform:rotate(90deg);}
 .tool-call-group-body{display:block;padding-left:var(--space-3);}
@@ -2693,11 +2694,13 @@ main.main.showing-profiles > #mainProfiles{display:flex;}
   justify-content: flex-start;
   gap: 8px;
 }
-.msg-usage-inline {
+.msg-usage-inline,
+.msg-duration-inline {
   font-size: 11px;
   color: var(--muted);
   opacity: .7;
   flex: 0 0 auto;
+  font-variant-numeric: tabular-nums;
 }
 .msg-foot-with-usage .msg-time,
 .msg-foot-with-usage .msg-actions {
