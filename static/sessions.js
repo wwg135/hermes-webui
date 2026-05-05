@@ -1936,6 +1936,16 @@ function _sessionVirtualSpacer(height, where){
 
 function _scheduleSessionVirtualizedRender(){
   if(_renamingSid||_sessionVirtualScrollRaf) return;
+  // Skip the re-render if the list is below the virtualization threshold —
+  // there's no virtual window to recompute, and re-rendering would just
+  // rebuild the whole DOM on every scroll tick. Without this guard, the
+  // unconditional scroll listener (attached for any list) caused
+  // user-facing scroll jumps on small lists. (#1669 follow-up)
+  const list=_sessionVirtualScrollList;
+  if(list){
+    const total=Number(list.dataset.sessionVirtualTotal||0);
+    if(total>0&&total<=SESSION_VIRTUAL_THRESHOLD_ROWS) return;
+  }
   _sessionVirtualScrollRaf=requestAnimationFrame(()=>{_sessionVirtualScrollRaf=0;renderSessionListFromCache();});
 }
 
@@ -2202,7 +2212,13 @@ function renderSessionListFromCache(){
   }
   if(virtualAnchorScrollTop!==null){
     list.scrollTop=virtualAnchorScrollTop;
-  }else if(virtualWindow.virtualized){
+  }else if(listScrollTopBeforeRender>0){
+    // Always restore the user's scroll position after re-render, regardless
+    // of whether the virtualization window applies. Lists below the
+    // virtualization threshold (≤80 rows) still have their DOM rebuilt by
+    // every renderSessionListFromCache() call, and without this restore the
+    // scrollTop drops to 0 — producing a "scroll keeps jumping back" feel
+    // when the list scrolls naturally. Fixed for #1669 follow-up.
     list.scrollTop=listScrollTopBeforeRender;
   }
   // Select mode toggle button (only when NOT in select mode)
