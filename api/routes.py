@@ -1907,6 +1907,11 @@ def handle_get(handler, parsed) -> bool:
     if parsed.path == "/api/insights":
         return _handle_insights(handler, parsed)
 
+    if parsed.path.startswith("/api/kanban/"):
+        from api.kanban_bridge import handle_kanban_get
+
+        return handle_kanban_get(handler, parsed)
+
     if parsed.path == "/health":
         return _handle_health(handler, parsed)
 
@@ -2621,6 +2626,11 @@ def handle_post(handler, parsed) -> bool:
         return handle_transcribe(handler)
 
     body = read_body(handler)
+
+    if parsed.path.startswith("/api/kanban/"):
+        from api.kanban_bridge import handle_kanban_post
+
+        return handle_kanban_post(handler, parsed, body)
 
     if parsed.path == "/api/session/new":
         try:
@@ -3767,6 +3777,30 @@ def handle_post(handler, parsed) -> bool:
             return bad(handler, str(e), status=500)
 
     return False  # 404
+
+
+def handle_patch(handler, parsed) -> bool:
+    """Handle all PATCH routes. Returns True if handled, False for 404."""
+    if not _check_csrf(handler):
+        return j(handler, {"error": "Cross-origin request rejected"}, status=403)
+    body = read_body(handler)
+    if parsed.path.startswith("/api/kanban/"):
+        from api.kanban_bridge import handle_kanban_patch
+
+        return handle_kanban_patch(handler, parsed, body)
+    return False
+
+
+def handle_delete(handler, parsed) -> bool:
+    """Handle all DELETE routes. Returns True if handled, False for 404."""
+    if not _check_csrf(handler):
+        return j(handler, {"error": "Cross-origin request rejected"}, status=403)
+    body = read_body(handler)
+    if parsed.path.startswith("/api/kanban/"):
+        from api.kanban_bridge import handle_kanban_delete
+
+        return handle_kanban_delete(handler, parsed, body)
+    return False
 
 # ── GET route helpers ─────────────────────────────────────────────────────────
 

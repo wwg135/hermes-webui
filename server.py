@@ -22,7 +22,7 @@ from api.auth import check_auth
 from api.config import HOST, PORT, STATE_DIR, SESSION_DIR, DEFAULT_WORKSPACE
 from api.helpers import j, get_profile_cookie
 from api.profiles import set_request_profile, clear_request_profile
-from api.routes import handle_get, handle_post
+from api.routes import handle_delete, handle_get, handle_patch, handle_post
 from api.startup import auto_install_agent_deps, fix_credential_permissions
 from api.updates import WEBUI_VERSION
 
@@ -137,7 +137,7 @@ class Handler(BaseHTTPRequestHandler):
         finally:
             clear_request_profile()
 
-    def do_POST(self) -> None:
+    def _handle_write(self, route_func) -> None:
         self._req_t0 = time.time()
         # Per-request profile context from cookie (issue #798)
         cookie_profile = get_profile_cookie(self)
@@ -146,7 +146,7 @@ class Handler(BaseHTTPRequestHandler):
         try:
             parsed = urlparse(self.path)
             if not check_auth(self, parsed): return
-            result = handle_post(self, parsed)
+            result = route_func(self, parsed)
             if result is False:
                 return j(self, {'error': 'not found'}, status=404)
         except Exception as e:
@@ -154,6 +154,15 @@ class Handler(BaseHTTPRequestHandler):
             return j(self, {'error': 'Internal server error'}, status=500)
         finally:
             clear_request_profile()
+
+    def do_POST(self) -> None:
+        self._handle_write(handle_post)
+
+    def do_PATCH(self) -> None:
+        self._handle_write(handle_patch)
+
+    def do_DELETE(self) -> None:
+        self._handle_write(handle_delete)
 
 
 def _raise_fd_soft_limit(target: int = 4096) -> dict:

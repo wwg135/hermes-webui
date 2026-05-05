@@ -1,5 +1,22 @@
 let _currentPanel = 'chat';
 let _renamingAppTitlebar = false;  // guard against re-entrant rename
+let _kanbanBoard = null;
+let _kanbanLatestEventId = 0;
+let _kanbanPollTimer = null;
+let _kanbanCurrentTaskId = null;
+let _kanbanLanesByProfile = false;
+// Multi-board state. _kanbanCurrentBoard is the slug of the active board
+// the UI is currently viewing. null means "use whatever the server reports
+// as active" (i.e. don't pin a specific board in API calls). The UI
+// persists the last-viewed slug to localStorage so refresh stays put.
+let _kanbanCurrentBoard = null;
+let _kanbanBoardsList = null;
+let _kanbanBoardMenuOpen = false;
+// SSE event stream — replaces the 30s polling cadence with a long-lived
+// /api/kanban/events/stream connection. Falls back to polling when the
+// EventSource fails to connect (proxy that strips text/event-stream, etc).
+let _kanbanEventSource = null;
+let _kanbanEventSourceFailures = 0;
 let _skillsData = null; // cached skills list
 let _cronList = null; // cached cron jobs (array)
 let _currentCronDetail = null; // full cron job object
@@ -153,6 +170,11 @@ async function switchPanel(name, opts = {}) {
   const prevPanel = _currentPanel;
   if (!opts.bypassSettingsGuard && !_beforePanelSwitch(nextPanel)) return false;
   if (prevPanel !== 'settings' && nextPanel === 'settings') _beginSettingsPanelSession();
+  // Close any long-lived Kanban SSE stream when leaving the kanban panel
+  // so we don't keep a stale connection open in the background.
+  if (prevPanel === 'kanban' && nextPanel !== 'kanban') {
+    if (typeof _kanbanStopPolling === 'function') _kanbanStopPolling();
+  }
   _currentPanel = nextPanel;
   // Update nav tabs (rail + mobile sidebar-nav share data-panel)
   document.querySelectorAll('[data-panel]').forEach(t => t.classList.toggle('active', t.dataset.panel === nextPanel));
@@ -164,12 +186,13 @@ async function switchPanel(name, opts = {}) {
   // showing-<name> class on <main>; no class means chat (the default).
   const mainEl = document.querySelector('main.main');
   if (mainEl) {
-    ['settings','skills','memory','tasks','workspaces','profiles','insights'].forEach(p => {
+    ['settings','skills','memory','tasks','kanban','workspaces','profiles','insights'].forEach(p => {
       mainEl.classList.toggle('showing-' + p, nextPanel === p);
     });
   }
   // Lazy-load panel data
   if (nextPanel === 'tasks') await loadCrons();
+  if (nextPanel === 'kanban') await loadKanban();
   if (nextPanel === 'skills') await loadSkills();
   if (nextPanel === 'memory') await loadMemory();
   if (nextPanel === 'workspaces') await loadWorkspacesPanel();
@@ -856,6 +879,643 @@ async function cronResume(id) {
 
 let _editingCronId = null;
 
+// ── Kanban panel (read-only) ──
+function _kanbanColumnLabel(name){ return t('kanban_status_' + name) || name; }
+function _kanbanTaskTitle(task){ return task.title || task.summary || task.id || t('kanban_task'); }
+function _kanbanTaskBody(task){ return task.body || task.description || task.prompt || ''; }
+function _kanbanTaskMeta(task){
+  const bits = [];
+  if (task.assignee) bits.push(task.assignee);
+  if (task.tenant) bits.push(task.tenant);
+  if (task.priority !== undefined && task.priority !== null) bits.push('P' + task.priority);
+  if (task.comment_count) bits.push('💬 ' + task.comment_count);
+  if (task.link_counts && task.link_counts.children) bits.push('↳ ' + task.link_counts.children);
+  return bits;
+}
+
+function _kanbanCurrentFilters(){
+  const q = $('kanbanSearch') ? $('kanbanSearch').value.trim().toLowerCase() : '';
+  const assigneeEl = $('kanbanAssigneeFilter');
+  const tenantEl = $('kanbanTenantFilter');
+  const assignee = assigneeEl ? (assigneeEl.value || assigneeEl.dataset.defaultValue || '') : '';
+  const tenant = tenantEl ? (tenantEl.value || tenantEl.dataset.defaultValue || '') : '';
+  const includeArchived = !!($('kanbanIncludeArchived') && $('kanbanIncludeArchived').checked);
+  const onlyMine = !!($('kanbanOnlyMine') && $('kanbanOnlyMine').checked);
+  return {q, assignee, tenant, includeArchived, onlyMine};
+}
+
+function _kanbanApplyConfigDefaults(config){
+  if (!config || _kanbanConfigApplied) return;
+  if ($('kanbanTenantFilter') && config.default_tenant) $('kanbanTenantFilter').dataset.defaultValue = config.default_tenant;
+  if ($('kanbanIncludeArchived') && config.include_archived_by_default === true) $('kanbanIncludeArchived').checked = true;
+  if (config.lane_by_profile === true) _kanbanLanesByProfile = true;
+  _kanbanConfigApplied = true;
+}
+let _kanbanConfigApplied = false;
+
+function _kanbanSetSelectOptions(el, values, allLabelKey){
+  if (!el) return;
+  const current = el.value || el.dataset.defaultValue || '';
+  const opts = [`<option value="">${esc(t(allLabelKey))}</option>`]
+    .concat((values || []).map(v => `<option value="${esc(v)}">${esc(v)}</option>`));
+  el.innerHTML = opts.join('');
+  if ([...el.options].some(o => o.value === current)) el.value = current;
+}
+
+function _kanbanVisibleTasks(){
+  const filters = _kanbanCurrentFilters();
+  const columns = (_kanbanBoard && _kanbanBoard.columns) || [];
+  return columns.map(col => {
+    const tasks = (col.tasks || []).filter(task => {
+      if (!filters.q) return true;
+      const haystack = [task.id, _kanbanTaskTitle(task), _kanbanTaskBody(task), task.assignee, task.tenant]
+        .filter(Boolean).join(' ').toLowerCase();
+      return haystack.includes(filters.q);
+    });
+    return {...col, tasks};
+  });
+}
+
+function _kanbanRenderSidebar(columns){
+  const list = $('kanbanList');
+  if (!list) return;
+  const tasks = columns.flatMap(col => (col.tasks || []).map(task => ({...task, status: task.status || col.name})));
+  if (!tasks.length) {
+    list.innerHTML = `<div class="kanban-empty" data-i18n="kanban_no_matching_tasks">${esc(t('kanban_no_matching_tasks'))}</div>`;
+    return;
+  }
+  list.innerHTML = tasks.map(task => {
+    const meta = _kanbanTaskMeta(task);
+    return `<button class="kanban-list-item" onclick="loadKanbanTask('${esc(task.id)}')">
+      <span class="kanban-list-status">${esc(_kanbanColumnLabel(task.status))}</span>
+      <span class="kanban-list-title">${esc(_kanbanTaskTitle(task))}</span>
+      ${meta.length ? `<span class="kanban-meta">${esc(meta.join(' · '))}</span>` : ''}
+    </button>`;
+  }).join('');
+}
+
+
+function _kanbanRenderMarkdownInline(escaped){
+  return String(escaped || '')
+    .replace(/`([^`\n]+)`/g, (_m, code) => `<code>${code}</code>`)
+    .replace(/\*\*([^*\n]+)\*\*/g, (_m, text) => `<strong>${text}</strong>`)
+    .replace(/(^|[^*])\*([^*\n]+)\*/g, (_m, prefix, text) => `${prefix}<em>${text}</em>`)
+    .replace(/\[([^\]\n]+)\]\((https?:\/\/[^\s)]+|mailto:[^\s)]+)\)/g, (_m, text, href) => `<a href="${href}" target="_blank" rel="noopener noreferrer">${text}</a>`);
+}
+
+function _kanbanRenderMarkdown(source){
+  if (!source) return '';
+  return `<div class="hermes-kanban-md">${esc(source).split(/\r?\n/).map(line => line.trim() ? `<p>${_kanbanRenderMarkdownInline(line)}</p>` : '').join('')}</div>`;
+}
+
+function _kanbanFormatDuration(seconds){
+  const n = Number(seconds);
+  if (!Number.isFinite(n) || n <= 0) return '';
+  if (n < 60) return Math.round(n) + 's';
+  if (n < 3600) return Math.round(n / 60) + 'm';
+  if (n < 86400) return Math.round(n / 3600) + 'h';
+  return Math.round(n / 86400) + 'd';
+}
+
+function _kanbanTaskAge(task){
+  const age = task && (task.age_seconds || task.age);
+  if (Number.isFinite(Number(age))) return _kanbanFormatDuration(age);
+  return '';
+}
+
+function _kanbanCardStalenessClass(task){
+  const age = Number(task && (task.age_seconds || task.age));
+  const status = task && task.status;
+  if (!Number.isFinite(age)) return '';
+  if ((status === 'running' && age > 3600) || (status === 'blocked' && age > 86400)) return 'kanban-card-stale-red';
+  if ((status === 'running' && age > 600) || (status === 'ready' && age > 3600) || (status === 'blocked' && age > 3600)) return 'kanban-card-stale-amber';
+  return '';
+}
+
+function _kanbanCardQuickActions(task){
+  const id = esc(task.id || '');
+  const status = task.status || '';
+  const start = status !== 'running' && status !== 'done' && status !== 'archived' ? `<button type="button" class="kanban-card-action" onclick="quickKanbanCardAction(event,'${id}','running')">${esc(t('kanban_card_start'))}</button>` : '';
+  const complete = status !== 'done' && status !== 'archived' ? `<button type="button" class="kanban-card-action" onclick="quickKanbanCardAction(event,'${id}','done')">${esc(t('kanban_card_complete'))}</button>` : '';
+  const archive = status !== 'archived' ? `<button type="button" class="kanban-card-action danger" onclick="quickKanbanCardAction(event,'${id}','archived')">${esc(t('kanban_card_archive'))}</button>` : '';
+  return `<div class="kanban-card-actions" onclick="event.stopPropagation()">${start}${complete}${archive}</div>`;
+}
+
+async function quickKanbanCardAction(event, taskId, status){
+  if (event) event.stopPropagation();
+  return updateKanbanTask(taskId, {status});
+}
+
+function dragKanbanTask(event, taskId){
+  if (!event.dataTransfer) return;
+  event.dataTransfer.effectAllowed = 'move';
+  event.dataTransfer.setData('text/plain', taskId);
+}
+
+function allowKanbanDrop(event){
+  // Don't accept drops into the 'running' column. Entering 'running' is owned
+  // by the dispatcher/claim_task path (sets claim_lock + claim_expires +
+  // started_at + worker_pid). A drag-drop would bypass that contract and the
+  // bridge would reject the resulting PATCH with HTTP 400 anyway. Refuse the
+  // drop visually so users see immediate feedback.
+  const target = event.currentTarget;
+  if (target && target.dataset && target.dataset.kanbanStatus === 'running') {
+    if (event.dataTransfer) event.dataTransfer.dropEffect = 'none';
+    return;
+  }
+  event.preventDefault();
+  if (event.dataTransfer) event.dataTransfer.dropEffect = 'move';
+}
+
+function clearKanbanDrop(event){
+  if (event && event.currentTarget) event.currentTarget.classList.remove('drop-target');
+}
+
+async function dropKanbanTask(event, status){
+  event.preventDefault();
+  clearKanbanDrop(event);
+  const taskId = event.dataTransfer ? event.dataTransfer.getData('text/plain') : '';
+  if (taskId && status) await updateKanbanTask(taskId, {status});
+}
+
+function _kanbanLaneNames(columns){
+  const names = new Set();
+  columns.forEach(col => (col.tasks || []).forEach(task => names.add(task.assignee || t('kanban_unassigned'))));
+  return Array.from(names).sort((a, b) => String(a).localeCompare(String(b)));
+}
+
+function _kanbanRenderColumn(col){
+  const tasks = col.tasks || [];
+  return `<section class="kanban-column" data-status="${esc(col.name)}" data-kanban-status="${esc(col.name)}" ondragover="allowKanbanDrop(event)" ondragenter="event.currentTarget.classList.add('drop-target')" ondragleave="clearKanbanDrop(event)" ondrop="dropKanbanTask(event, '${esc(col.name)}')">
+      <div class="kanban-column-head">
+        <span>${esc(_kanbanColumnLabel(col.name))}</span>
+        <span class="kanban-count">${tasks.length}</span>
+      </div>
+      <div class="kanban-column-body">
+        ${tasks.length ? tasks.map(task => _kanbanCard(task, col.name)).join('') : `<div class="kanban-empty">${esc(t('kanban_empty'))}</div>`}
+      </div>
+    </section>`;
+}
+
+function _kanbanRenderProfileLanes(columns){
+  const lanes = _kanbanLaneNames(columns);
+  if (!lanes.length) return columns.map(_kanbanRenderColumn).join('');
+  return `<div class="kanban-profile-lanes">${lanes.map(lane => {
+    const laneCols = columns.map(col => ({...col, tasks: (col.tasks || []).filter(task => (task.assignee || t('kanban_unassigned')) === lane)}));
+    const count = laneCols.reduce((sum, col) => sum + (col.tasks || []).length, 0);
+    return `<section class="kanban-profile-lane" data-kanban-lane="${esc(lane)}"><header class="kanban-profile-lane-head"><span>${esc(lane)}</span><span class="kanban-count">${count}</span></header><div class="kanban-board kanban-board-in-lane">${laneCols.map(_kanbanRenderColumn).join('')}</div></section>`;
+  }).join('')}</div>`;
+}
+
+function _kanbanRenderBoard(){
+  const board = $('kanbanBoard');
+  if (!board) return;
+  if (!_kanbanBoard || !_kanbanBoard.columns) {
+    board.innerHTML = `<div class="main-view-empty"><div class="main-view-empty-title">${esc(t('kanban_no_data'))}</div></div>`;
+    return;
+  }
+  const columns = _kanbanVisibleTasks();
+  const total = columns.reduce((n, col) => n + (col.tasks || []).length, 0);
+  if ($('kanbanSummary')) $('kanbanSummary').textContent = String(t('kanban_visible_tasks')).replace('{0}', total);
+  _kanbanRenderSidebar(columns);
+  board.innerHTML = _kanbanLanesByProfile ? _kanbanRenderProfileLanes(columns) : columns.map(_kanbanRenderColumn).join('');
+}
+
+function _kanbanCard(task, status){
+  const priority = Number(task.priority || 0);
+  const links = task.link_counts || {};
+  const linkTotal = Number(links.parents || 0) + Number(links.children || 0);
+  const comments = Number(task.comment_count || 0);
+  const age = _kanbanTaskAge(task);
+  const stale = _kanbanCardStalenessClass(task);
+  const body = _kanbanTaskBody(task);
+  const assignee = task.assignee ? `<span class="kanban-card-assignee">@${esc(task.assignee)}</span>` : `<span class="kanban-card-unassigned">${esc(t('kanban_unassigned'))}</span>`;
+  return `<article class="kanban-card ${esc(stale)}" data-kanban-task-id="${esc(task.id)}" draggable="true" ondragstart="dragKanbanTask(event, '${esc(task.id)}')" onclick="loadKanbanTask('${esc(task.id)}')" tabindex="0" role="button" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();loadKanbanTask('${esc(task.id)}')}">
+    <div class="kanban-card-topline"><span class="kanban-card-id">${esc(task.id || '')}</span>${priority ? `<span class="kanban-badge priority">P${priority}</span>` : ''}${task.tenant ? `<span class="kanban-badge tenant">${esc(task.tenant)}</span>` : ''}</div>
+    <div class="kanban-card-title">${esc(_kanbanTaskTitle(task))}</div>
+    ${body ? `<div class="kanban-card-body">${_kanbanRenderMarkdown(body)}</div>` : ''}
+    <div class="kanban-card-meta">${assignee}${comments ? `<span class="kanban-card-metric">💬 ${comments}</span>` : ''}${linkTotal ? `<span class="kanban-card-metric">↔ ${linkTotal}</span>` : ''}${age ? `<span class="kanban-card-age">${esc(age)}</span>` : ''}</div>
+    ${_kanbanCardQuickActions(task)}
+  </article>`;
+}
+
+async function loadKanban(animate){
+  const board = $('kanbanBoard');
+  const list = $('kanbanList');
+  try {
+    if (animate && board) board.innerHTML = `<div style="padding:16px;color:var(--muted);font-size:13px">${esc(t('loading'))}</div>`;
+    const config = await api('/api/kanban/config' + _kanbanBoardQuery());
+    let assignees = null;
+    try { assignees = await api('/api/kanban/assignees' + _kanbanBoardQuery()); } catch(e) { assignees = null; }
+    _kanbanApplyConfigDefaults(config);
+    const filters = _kanbanCurrentFilters();
+    const params = new URLSearchParams();
+    if (filters.assignee) params.set('assignee', filters.assignee);
+    if (filters.tenant) params.set('tenant', filters.tenant);
+    if (filters.includeArchived) params.set('include_archived', '1');
+    if (filters.onlyMine) params.set('only_mine', '1');
+    if (_kanbanCurrentBoard) params.set('board', _kanbanCurrentBoard);
+    const path = '/api/kanban/board' + (params.toString() ? '?' + params.toString() : '');
+    const data = await api(path);
+    if (data && data.changed === false && _kanbanBoard) { _kanbanRenderBoard(); return; }
+    _kanbanBoard = data || {columns: []};
+    if ((!_kanbanBoard.columns || !_kanbanBoard.columns.length) && config && config.columns) {
+      _kanbanBoard.columns = config.columns.map(name => ({name, tasks: []}));
+    }
+    _kanbanLatestEventId = Number(_kanbanBoard.latest_event_id || 0);
+    // Toggle the "Read-only view" banner based on the bridge's read_only flag.
+    // Bridge sets read_only=true only when the kanban_db connection cannot accept
+    // writes (e.g. dispatcher contention or library missing). Hide otherwise.
+    try {
+      const ro = document.querySelector('.kanban-readonly');
+      if (ro) ro.style.display = _kanbanBoard.read_only ? '' : 'none';
+    } catch(_) {}
+    _kanbanSetSelectOptions($('kanbanAssigneeFilter'), _kanbanBoard.assignees || (assignees && assignees.assignees) || (config && config.assignees), 'kanban_all_assignees');
+    _kanbanSetSelectOptions($('kanbanTenantFilter'), _kanbanBoard.tenants, 'kanban_all_tenants');
+    await loadKanbanStats();
+    // Refresh the multi-board switcher (and resolve which board to show
+    // from localStorage / server state). Best-effort — failures hide the
+    // switcher rather than blocking the panel from rendering.
+    await loadKanbanBoards();
+    _kanbanStartPolling();
+    _kanbanRenderBoard();
+  } catch(e) {
+    const msg = `${esc(t('kanban_unavailable'))}: ${esc(e.message || e)}`;
+    if (board) board.innerHTML = `<div class="main-view-empty"><div class="main-view-empty-title">${msg}</div></div>`;
+    if (list) list.innerHTML = `<div class="kanban-empty">${msg}</div>`;
+  }
+}
+
+function filterKanban(){ _kanbanRenderBoard(); }
+
+async function loadKanbanStats(){
+  try {
+    const stats = await api('/api/kanban/stats' + _kanbanBoardQuery());
+    const el = $('kanbanStats');
+    if (!el) return;
+    const byStatus = (stats && stats.by_status) || {};
+    const total = Object.values(byStatus).reduce((a, b) => a + Number(b || 0), 0);
+    const cells = Object.entries(byStatus).sort(([a], [b]) => a.localeCompare(b)).map(([status, count]) =>
+      `<span class="kanban-stat-cell"><strong>${esc(String(count))}</strong> ${esc(_kanbanColumnLabel(status))}</span>`
+    ).join('');
+    el.innerHTML = `<div class="kanban-stats-grid"><span class="kanban-stat-cell total"><strong>${esc(String(total))}</strong> ${esc(t('kanban_stats'))}</span>${cells}</div>`;
+  } catch(e) { /* stats are best-effort */ }
+}
+
+async function refreshKanbanEvents(){
+  if (_currentPanel !== 'kanban' || !_kanbanLatestEventId) return;
+  try {
+    const eventsEndpoint = '/api/kanban/events';
+    const events = await api(eventsEndpoint + _kanbanBoardQuery({since: _kanbanLatestEventId}));
+    if (events && Array.isArray(events.events) && events.events.length) {
+      _kanbanLatestEventId = Number(events.latest_event_id || events.cursor || _kanbanLatestEventId);
+      await loadKanban(true);
+      if (_kanbanCurrentTaskId && events.events.some(ev => ev.task_id === _kanbanCurrentTaskId)) await loadKanbanTask(_kanbanCurrentTaskId);
+    }
+  } catch(e) { /* polling should not spam toasts */ }
+}
+
+function _kanbanStartPolling(){
+  // Prefer SSE for low-latency live updates. Fall back to polling on
+  // browsers without EventSource or after repeated stream failures.
+  if (typeof EventSource === 'undefined' || _kanbanEventSourceFailures >= 3) {
+    if (_kanbanPollTimer) return;
+    _kanbanPollTimer = setInterval(refreshKanbanEvents, 30000);
+    return;
+  }
+  _kanbanStartEventStream();
+}
+
+function _kanbanStopPolling(){
+  if (_kanbanPollTimer) { clearInterval(_kanbanPollTimer); _kanbanPollTimer = null; }
+  if (_kanbanEventSource) { try { _kanbanEventSource.close(); } catch(_) {} _kanbanEventSource = null; }
+}
+
+function _kanbanStartEventStream(){
+  // Tear down any prior stream before opening a new one (board switch,
+  // login change, etc.).
+  if (_kanbanEventSource) { try { _kanbanEventSource.close(); } catch(_) {} _kanbanEventSource = null; }
+  const since = Number(_kanbanLatestEventId || 0);
+  let url = '/api/kanban/events/stream' + _kanbanBoardQuery({since: since});
+  let es;
+  try {
+    es = new EventSource(url);
+  } catch(e) {
+    _kanbanEventSourceFailures += 1;
+    if (_kanbanEventSourceFailures < 3 && !_kanbanPollTimer) {
+      _kanbanPollTimer = setInterval(refreshKanbanEvents, 30000);
+    }
+    return;
+  }
+  _kanbanEventSource = es;
+  es.addEventListener('hello', (ev) => {
+    // Reset the failure counter on a successful handshake.
+    _kanbanEventSourceFailures = 0;
+  });
+  es.addEventListener('events', async (ev) => {
+    if (_currentPanel !== 'kanban') return;  // ignore while user is on another panel
+    let data;
+    try { data = JSON.parse(ev.data); } catch(_) { return; }
+    if (!data || !Array.isArray(data.events) || !data.events.length) return;
+    _kanbanLatestEventId = Number(data.cursor || _kanbanLatestEventId);
+    // Re-fetch the board so the visual state reflects the new events.
+    // Throttle: if events are arriving faster than ~1/sec we coalesce.
+    _scheduleKanbanRefresh(data.events);
+  });
+  es.onerror = () => {
+    _kanbanEventSourceFailures += 1;
+    if (_kanbanEventSourceFailures >= 3) {
+      // Give up on SSE for this session — fall back to HTTP polling.
+      try { es.close(); } catch(_) {}
+      _kanbanEventSource = null;
+      if (!_kanbanPollTimer) _kanbanPollTimer = setInterval(refreshKanbanEvents, 30000);
+    }
+    // EventSource auto-reconnects under the hood; nothing more to do here
+    // until we hit the failure limit.
+  };
+}
+
+let _kanbanRefreshScheduled = false;
+let _kanbanRefreshPendingTaskIds = new Set();
+function _scheduleKanbanRefresh(events){
+  for (const ev of events) {
+    if (ev && ev.task_id) _kanbanRefreshPendingTaskIds.add(ev.task_id);
+  }
+  if (_kanbanRefreshScheduled) return;
+  _kanbanRefreshScheduled = true;
+  // 250ms debounce — keeps a burst of N events from triggering N reloads.
+  setTimeout(async () => {
+    _kanbanRefreshScheduled = false;
+    const taskIds = Array.from(_kanbanRefreshPendingTaskIds);
+    _kanbanRefreshPendingTaskIds.clear();
+    if (_currentPanel !== 'kanban') return;
+    try {
+      await loadKanban(true);
+      if (_kanbanCurrentTaskId && taskIds.includes(_kanbanCurrentTaskId)) {
+        await loadKanbanTask(_kanbanCurrentTaskId);
+      }
+    } catch(_) { /* swallow — SSE refresh shouldn't toast */ }
+  }, 250);
+}
+
+// Build a "?board=<slug>" or "?since=N&board=<slug>" query string fragment
+// based on the active board. Empty when the user is on the default board
+// AND nobody has explicitly switched (so we don't pin to "default" and
+// override a hypothetical server-side switch).
+function _kanbanBoardQuery(extra){
+  const params = new URLSearchParams();
+  if (extra) {
+    for (const [k, v] of Object.entries(extra)) {
+      if (v !== null && v !== undefined && v !== '') params.set(k, String(v));
+    }
+  }
+  if (_kanbanCurrentBoard) params.set('board', _kanbanCurrentBoard);
+  const s = params.toString();
+  return s ? '?' + s : '';
+}
+
+async function nudgeKanbanDispatcher(){
+  try {
+    const dispatchEndpoint = '/api/kanban/dispatch';
+    await api(dispatchEndpoint + '?dry_run=1&max=1' + (_kanbanCurrentBoard ? '&board=' + encodeURIComponent(_kanbanCurrentBoard) : ''), {method: 'POST'});
+    showToast(t('kanban_nudge_dispatcher'));
+    await loadKanban(true);
+  } catch(e) { showToast(t('kanban_unavailable') + ': ' + (e.message || e), 'error'); }
+}
+
+function _kanbanSelectedTaskIds(){
+  const selected = Array.from(document.querySelectorAll('.kanban-card.selected')).map(card => card.dataset.kanbanTaskId).filter(Boolean);
+  return selected.length ? selected : (_kanbanCurrentTaskId ? [_kanbanCurrentTaskId] : []);
+}
+
+async function bulkUpdateKanban(){
+  const ids = _kanbanSelectedTaskIds();
+  const status = $('kanbanBulkStatus') ? $('kanbanBulkStatus').value : '';
+  if (!ids.length || !status) return;
+  try {
+    await api('/api/kanban/tasks/bulk' + _kanbanBoardQuery(), {method: 'POST', body: JSON.stringify({ids, status})});
+    showToast(t('kanban_bulk_action'));
+    await loadKanban(true);
+  } catch(e) { showToast(t('kanban_unavailable') + ': ' + (e.message || e), 'error'); }
+}
+
+async function blockKanbanTask(taskId){
+  try {
+    await api('/api/kanban/tasks/' + encodeURIComponent(taskId) + '/block' + _kanbanBoardQuery(), {method: 'POST', body: JSON.stringify({reason: 'blocked from WebUI'})});
+    await loadKanbanTask(taskId);
+    await loadKanban(true);
+  } catch(e) { showToast(t('kanban_unavailable') + ': ' + (e.message || e), 'error'); }
+}
+
+async function unblockKanbanTask(taskId){
+  try {
+    await api('/api/kanban/tasks/' + encodeURIComponent(taskId) + '/unblock' + _kanbanBoardQuery(), {method: 'POST', body: JSON.stringify({})});
+    await loadKanbanTask(taskId);
+    await loadKanban(true);
+  } catch(e) { showToast(t('kanban_unavailable') + ': ' + (e.message || e), 'error'); }
+}
+
+function closeKanbanTaskDetail(){
+  _kanbanCurrentTaskId = null;
+  const preview = $('kanbanTaskPreview');
+  if (preview) {
+    preview.style.display = 'none';
+    preview.innerHTML = '';
+  }
+  const board = $('kanbanBoard');
+  if (board) board.querySelectorAll('.kanban-card').forEach(card => card.classList.remove('selected'));
+}
+
+function _kanbanFormatTimestamp(value){
+  if (value === undefined || value === null || value === '') return '';
+  let date = null;
+  if (typeof value === 'number') date = new Date(value > 100000000000 ? value : value * 1000);
+  else if (/^\d+(?:\.\d+)?$/.test(String(value).trim())) {
+    const n = Number(value);
+    date = new Date(n > 100000000000 ? n : n * 1000);
+  } else {
+    date = new Date(value);
+  }
+  if (!date || Number.isNaN(date.getTime())) return String(value);
+  try { return date.toLocaleString(); } catch(e) { return date.toISOString(); }
+}
+
+function _kanbanEventSummary(event){
+  const kind = event.kind || event.type || 'event';
+  const payload = event.payload || event.data || {};
+  if (payload && typeof payload === 'object') {
+    const parts = [];
+    if (payload.status) parts.push(String(payload.status));
+    if (payload.reason) parts.push(String(payload.reason));
+    if (payload.summary) parts.push(String(payload.summary));
+    if (payload.fields && Array.isArray(payload.fields)) parts.push(payload.fields.join(', '));
+    if (parts.length) return `${kind}: ${parts.join(' · ')}`;
+  }
+  return String(kind);
+}
+
+function _kanbanFormatDetailValue(value){
+  if (value === undefined || value === null || value === '') return '';
+  if (typeof value === 'object') {
+    try { return JSON.stringify(value, null, 2); } catch(e) { return String(value); }
+  }
+  return String(value);
+}
+
+function _kanbanDetailSection(cls, title, inner, emptyKey){
+  const content = inner || `<div class="kanban-detail-empty">${esc(t(emptyKey))}</div>`;
+  return `<section class="kanban-detail-section ${cls}">
+    <h3>${esc(title)}</h3>
+    ${content}
+  </section>`;
+}
+
+function _kanbanCommentHtml(comment){
+  const body = comment.body || comment.text || comment.content || '';
+  const by = comment.author || comment.created_by || comment.actor || '';
+  const at = _kanbanFormatTimestamp(comment.created_at || comment.ts || '');
+  return `<div class="kanban-detail-row">
+    <div class="kanban-detail-row-main">${esc(body)}</div>
+    <div class="kanban-detail-row-meta">${esc([by, at].filter(Boolean).join(' · '))}</div>
+  </div>`;
+}
+
+function _kanbanEventHtml(event){
+  const at = _kanbanFormatTimestamp(event.created_at || event.ts || '');
+  const payload = _kanbanFormatDetailValue(event.payload || event.data || '');
+  return `<div class="kanban-detail-row">
+    <div class="kanban-detail-row-main">${esc(_kanbanEventSummary(event))}</div>
+    ${payload ? `<pre class="kanban-detail-pre">${esc(payload)}</pre>` : ''}
+    <div class="kanban-detail-row-meta">${esc(at)}</div>
+  </div>`;
+}
+
+function _kanbanRunHtml(run){
+  const status = run.status || run.state || run.result || '';
+  const label = run.run_id || run.id || run.worker || t('kanban_task');
+  const started = _kanbanFormatTimestamp(run.started_at || run.created_at || '');
+  const finished = _kanbanFormatTimestamp(run.finished_at || run.completed_at || '');
+  const detail = run.error || run.summary || run.log_tail || '';
+  return `<div class="kanban-detail-row">
+    <div class="kanban-detail-row-main">${esc(label)}${status ? ` · ${esc(status)}` : ''}</div>
+    ${detail ? `<pre class="kanban-detail-pre">${esc(_kanbanFormatDetailValue(detail))}</pre>` : ''}
+    <div class="kanban-detail-row-meta">${esc([started, finished].filter(Boolean).join(' → '))}</div>
+  </div>`;
+}
+
+function _kanbanLinksHtml(links){
+  const parents = (links && links.parents) || [];
+  const children = (links && links.children) || [];
+  if (!parents.length && !children.length) return '';
+  const item = id => `<code>${esc(id)}</code>`;
+  return `<div class="kanban-detail-links-grid">
+    <div><strong>${esc(t('kanban_parents'))}</strong><div>${parents.length ? parents.map(item).join(' ') : esc(t('kanban_empty'))}</div></div>
+    <div><strong>${esc(t('kanban_children'))}</strong><div>${children.length ? children.map(item).join(' ') : esc(t('kanban_empty'))}</div></div>
+  </div>`;
+}
+
+async function createKanbanTask(){
+  const input = document.getElementById('kanbanNewTaskTitle');
+  const title = input ? input.value.trim() : '';
+  if (!title) return;
+  try {
+    const created = await api('/api/kanban/tasks' + _kanbanBoardQuery(), {
+      method: 'POST',
+      body: JSON.stringify({title}),
+    });
+    if (input) input.value = '';
+    await loadKanban(true);
+    if (created && created.task && created.task.id) await loadKanbanTask(created.task.id);
+  } catch(e) { showToast(t('kanban_unavailable') + ': ' + (e.message || e), 'error'); }
+}
+
+async function updateKanbanTask(taskId, patch){
+  if (!taskId || !patch) return;
+  try {
+    const updated = await api('/api/kanban/tasks/' + encodeURIComponent(taskId) + _kanbanBoardQuery(), {
+      method: 'PATCH',
+      body: JSON.stringify(patch),
+    });
+    await loadKanban(true);
+    await loadKanbanTask((updated && updated.task && updated.task.id) || taskId);
+  } catch(e) { showToast(t('kanban_unavailable') + ': ' + (e.message || e), 'error'); }
+}
+
+async function addKanbanComment(taskId){
+  const input = document.getElementById('kanbanCommentInput');
+  const body = input ? input.value.trim() : '';
+  if (!taskId || !body) return;
+  try {
+    await api('/api/kanban/tasks/' + encodeURIComponent(taskId) + '/comments' + _kanbanBoardQuery(), {
+      method: 'POST',
+      body: JSON.stringify({body}),
+    });
+    if (input) input.value = '';
+    await loadKanbanTask(taskId);
+  } catch(e) { showToast(t('kanban_unavailable') + ': ' + (e.message || e), 'error'); }
+}
+
+function _kanbanRenderTaskDetail(data){
+  const task = data.task || {};
+  const log = data.log || {};
+  const title = _kanbanTaskTitle(task);
+  const body = _kanbanTaskBody(task) || t('kanban_no_description');
+  const meta = _kanbanTaskMeta(task);
+  const comments = data.comments || [];
+  const events = data.events || [];
+  const links = data.links || {};
+  const runs = data.runs || [];
+  // Note: 'running' is intentionally absent — entering 'running' is the
+  // dispatcher/claim_task path's responsibility, not a user UI write. The
+  // bridge rejects PATCH status='running' with HTTP 400 to match the agent
+  // dashboard plugin's contract. UI users want to claim/promote a ready task
+  // via the dispatcher Nudge button, not flip it to running by hand.
+  const statusButtons = ['triage', 'todo', 'ready', 'blocked', 'done', 'archived'].map(status =>
+    `<button class="btn secondary" onclick="updateKanbanTask('${esc(task.id)}',{status:'${status}'})">${esc(_kanbanColumnLabel(status))}</button>`
+  ).join('') + `<button class="btn secondary" onclick="blockKanbanTask('${esc(task.id)}')">${esc(t('kanban_block'))}</button><button class="btn secondary" onclick="unblockKanbanTask('${esc(task.id)}')">${esc(t('kanban_unblock'))}</button>`;
+  return `<div class="kanban-task-preview-header">
+      <button class="btn secondary kanban-back-btn" onclick="closeKanbanTaskDetail()">${esc(t('kanban_back_to_board'))}</button>
+      <div class="kanban-task-preview-title">${esc(title)}</div>
+    </div>
+    <div class="kanban-task-preview-body">${esc(body)}</div>
+    ${meta.length ? `<div class="kanban-meta">${esc(meta.join(' · '))}</div>` : ''}
+    <div class="kanban-status-actions">${statusButtons}</div>
+    <div class="kanban-detail-grid">
+      ${_kanbanDetailSection('kanban-detail-comments', String(t('kanban_comments_count')).replace('{0}', comments.length), comments.map(_kanbanCommentHtml).join(''), 'kanban_no_comments')}
+      ${_kanbanDetailSection('kanban-detail-events', String(t('kanban_events_count')).replace('{0}', events.length), events.map(_kanbanEventHtml).join(''), 'kanban_no_events')}
+      ${_kanbanDetailSection('kanban-detail-links', t('kanban_links'), _kanbanLinksHtml(links), 'kanban_empty')}
+      ${_kanbanDetailSection('kanban-detail-runs', String(t('kanban_runs_count')).replace('{0}', runs.length), runs.map(_kanbanRunHtml).join(''), 'kanban_no_runs')}
+      ${_kanbanDetailSection('kanban-detail-log', t('kanban_worker_log'), log.content ? `<pre class="kanban-detail-pre">${esc(log.content)}</pre>` : '', 'kanban_empty')}
+    </div>
+    <div class="kanban-comment-form">
+      <textarea id="kanbanCommentInput" rows="2" placeholder="${esc(t('kanban_add_comment'))}"></textarea>
+      <button class="btn primary" onclick="addKanbanComment('${esc(task.id)}')">${esc(t('kanban_add_comment'))}</button>
+    </div>`;
+}
+
+async function loadKanbanTask(taskId){
+  if (!taskId) return;
+  try {
+    const data = await api('/api/kanban/tasks/' + encodeURIComponent(taskId) + _kanbanBoardQuery());
+    const logEndpoint = '/api/kanban/tasks/' + encodeURIComponent(taskId) + '/log' + _kanbanBoardQuery();
+    try { data.log = await api(logEndpoint + '?tail=65536'); } catch(e) { data.log = {}; }
+    _kanbanCurrentTaskId = taskId;
+    const task = data.task || {};
+    const title = _kanbanTaskTitle(task);
+    const board = $('kanbanBoard');
+    if (board) {
+      board.querySelectorAll('.kanban-card').forEach(card => card.classList.remove('selected'));
+      Array.from(board.querySelectorAll('.kanban-card')).find(card => card.dataset.kanbanTaskId === taskId)?.classList.add('selected');
+    }
+    const preview = $('kanbanTaskPreview');
+    if (preview) {
+      preview.style.display = '';
+      preview.innerHTML = _kanbanRenderTaskDetail(data);
+    }
+    showToast(`${t('kanban_task')}: ${title}`);
+  } catch(e) { showToast(t('kanban_unavailable') + ': ' + (e.message || e), 'error'); }
+}
+
 function loadTodos() {
   const panel = $('todoPanel');
   if (!panel) return;
@@ -888,6 +1548,355 @@ function loadTodos() {
         <div style="font-size:10px;color:var(--muted);margin-top:2px;opacity:.6">${esc(t.id)} · ${esc(t.status)}</div>
       </div>
     </div>`).join('');
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// Kanban: multi-board switcher + create/rename/archive modal
+// ────────────────────────────────────────────────────────────────────────────
+//
+// The bridge exposes /api/kanban/boards (GET/POST), /boards/<slug>
+// (PATCH/DELETE), and /boards/<slug>/switch (POST). The UI surfaces these
+// as a "Default ▾" dropdown next to the Board title — clicking it opens
+// a menu listing every board (current first, with task counts), plus
+// actions to create / rename / archive.
+
+const KANBAN_BOARD_LS_KEY = 'hermes-kanban-active-board';
+
+function _kanbanGetSavedBoard(){
+  try { return localStorage.getItem(KANBAN_BOARD_LS_KEY) || null; } catch(_) { return null; }
+}
+
+function _kanbanSetSavedBoard(slug){
+  try {
+    if (slug && slug !== 'default') localStorage.setItem(KANBAN_BOARD_LS_KEY, slug);
+    else localStorage.removeItem(KANBAN_BOARD_LS_KEY);
+  } catch(_) {}
+}
+
+async function loadKanbanBoards(){
+  // Fetches the boards list and updates the switcher UI. Best-effort —
+  // failures hide the switcher rather than blocking the panel from rendering.
+  const switcher = document.getElementById('kanbanBoardSwitcher');
+  if (!switcher) return;
+  let data;
+  try {
+    data = await api('/api/kanban/boards');
+  } catch(e) {
+    // Hide switcher on error so the user isn't stuck with a half-broken UI.
+    switcher.hidden = true;
+    return;
+  }
+  const boards = (data && data.boards) || [];
+  const serverCurrent = (data && data.current) || 'default';
+  _kanbanBoardsList = boards;
+  // Resolution chain for the active board:
+  //   localStorage hint → server's `current` → 'default'.
+  // The localStorage hint is honoured ONLY if it points at a board that
+  // still exists; otherwise we fall back to the server's pointer.
+  const saved = _kanbanGetSavedBoard();
+  let active = serverCurrent;
+  if (saved && boards.some(b => b.slug === saved)) {
+    active = saved;
+  }
+  _kanbanCurrentBoard = (active === 'default') ? null : active;
+  // The switcher is visible whenever ≥1 non-default board exists OR the
+  // current board is non-default. (If you only have 'default', a switcher
+  // adds clutter without value.)
+  const hasMultiple = boards.length > 1 || (active !== 'default');
+  switcher.hidden = !hasMultiple;
+  if (!hasMultiple) return;
+  // Update the toggle label/icon
+  const activeMeta = boards.find(b => b.slug === active) || {slug: active, name: active, icon: '', color: ''};
+  const nameEl = document.getElementById('kanbanBoardSwitcherName');
+  const iconEl = document.getElementById('kanbanBoardSwitcherIcon');
+  if (nameEl) nameEl.textContent = activeMeta.name || activeMeta.slug || 'Default';
+  if (iconEl) {
+    iconEl.textContent = activeMeta.icon || '';
+    if (activeMeta.color) iconEl.style.color = activeMeta.color;
+    else iconEl.style.color = '';
+  }
+  // Re-render the menu (in case it was open or changed)
+  _renderKanbanBoardMenu(boards, active);
+}
+
+// Restrict board.color to CSS hex codes or simple named colors before
+// interpolating into a `style=""` attribute. esc() HTML-escapes but
+// does not block CSS-context injection (`color:red;background:url(...)`
+// would otherwise exfiltrate page state via an attacker-controlled URL,
+// since neither this bridge nor the agent's kanban_db validates color).
+function _kanbanSafeColor(c){
+  if (typeof c !== 'string') return '';
+  const s = c.trim();
+  if (!s) return '';
+  if (/^#[0-9a-fA-F]{3,8}$/.test(s)) return s;
+  if (/^[a-zA-Z]{3,32}$/.test(s)) return s;
+  return '';
+}
+
+function _renderKanbanBoardMenu(boards, current){
+  const menu = document.getElementById('kanbanBoardSwitcherMenu');
+  if (!menu) return;
+  const items = boards.map(b => {
+    const isCurrent = b.slug === current;
+    const total = (b.total != null) ? b.total : (b.counts ? Object.values(b.counts).reduce((a,c)=>a+Number(c||0),0) : 0);
+    const icon = b.icon ? esc(b.icon) : '';
+    const safeColor = _kanbanSafeColor(b.color);
+    const colorStyle = safeColor ? `color:${safeColor}` : '';
+    return `<button type="button" class="kanban-board-switcher-item ${isCurrent ? 'is-current' : ''}" role="menuitem" data-board-slug="${esc(b.slug)}" onclick="switchKanbanBoard('${esc(b.slug)}')">
+      <span class="kanban-board-switcher-item-icon" style="${colorStyle}">${icon || (isCurrent ? '✓' : '')}</span>
+      <span class="kanban-board-switcher-item-name">${esc(b.name || b.slug)}</span>
+      <span class="kanban-board-switcher-item-count">${esc(String(total))}</span>
+    </button>`;
+  }).join('');
+  // Actions row — disable rename/archive when the only option is `default`
+  // (the default board's display metadata is editable but the slug isn't,
+  // and `default` cannot be archived).
+  const renameDisabled = current === 'default';
+  const archiveDisabled = current === 'default';
+  const actions = `
+    <div class="kanban-board-switcher-divider" role="separator"></div>
+    <button type="button" class="kanban-board-switcher-action" onclick="openKanbanCreateBoard()" data-i18n="kanban_new_board">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+      <span>${esc(t('kanban_new_board') || 'New board…')}</span>
+    </button>
+    <button type="button" class="kanban-board-switcher-action" onclick="openKanbanRenameBoard()" ${renameDisabled ? 'disabled' : ''} data-i18n="kanban_rename_board">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>
+      <span>${esc(t('kanban_rename_board') || 'Rename current board…')}</span>
+    </button>
+    <button type="button" class="kanban-board-switcher-action danger" onclick="archiveKanbanBoard()" ${archiveDisabled ? 'disabled' : ''} data-i18n="kanban_archive_board">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/></svg>
+      <span>${esc(t('kanban_archive_board') || 'Archive current board…')}</span>
+    </button>
+  `;
+  menu.innerHTML = items + actions;
+}
+
+function toggleKanbanBoardMenu(ev){
+  if (ev) ev.stopPropagation();
+  const menu = document.getElementById('kanbanBoardSwitcherMenu');
+  const toggle = document.getElementById('kanbanBoardSwitcherToggle');
+  if (!menu || !toggle) return;
+  _kanbanBoardMenuOpen = !_kanbanBoardMenuOpen;
+  menu.hidden = !_kanbanBoardMenuOpen;
+  toggle.setAttribute('aria-expanded', String(_kanbanBoardMenuOpen));
+  if (_kanbanBoardMenuOpen) {
+    // Click-away close
+    setTimeout(() => {
+      document.addEventListener('click', _kanbanCloseBoardMenuOnOutside, {once: true, capture: true});
+    }, 0);
+  }
+}
+
+function _kanbanCloseBoardMenuOnOutside(ev){
+  const switcher = document.getElementById('kanbanBoardSwitcher');
+  if (!switcher || !switcher.contains(ev.target)) {
+    _kanbanBoardMenuOpen = false;
+    const menu = document.getElementById('kanbanBoardSwitcherMenu');
+    const toggle = document.getElementById('kanbanBoardSwitcherToggle');
+    if (menu) menu.hidden = true;
+    if (toggle) toggle.setAttribute('aria-expanded', 'false');
+  } else {
+    // Re-arm the listener — the user clicked inside the switcher, possibly
+    // the toggle button which we want to handle through its own onclick.
+    setTimeout(() => {
+      document.addEventListener('click', _kanbanCloseBoardMenuOnOutside, {once: true, capture: true});
+    }, 0);
+  }
+}
+
+async function switchKanbanBoard(slug){
+  if (!slug) return;
+  const newBoard = (slug === 'default') ? null : slug;
+  if (newBoard === _kanbanCurrentBoard) {
+    // No-op switch — just close the menu.
+    _kanbanBoardMenuOpen = false;
+    const menu = document.getElementById('kanbanBoardSwitcherMenu');
+    if (menu) menu.hidden = true;
+    return;
+  }
+  _kanbanCurrentBoard = newBoard;
+  _kanbanSetSavedBoard(slug);
+  _kanbanLatestEventId = 0;  // reset cursor — new board has its own event sequence
+  _kanbanBoardMenuOpen = false;
+  const menu = document.getElementById('kanbanBoardSwitcherMenu');
+  if (menu) menu.hidden = true;
+  // Tell the server too (sets the on-disk active-board pointer for CLI/dashboard).
+  try {
+    await api('/api/kanban/boards/' + encodeURIComponent(slug) + '/switch', {method: 'POST'});
+  } catch(e) {
+    // Local UI switch still happens — the on-disk pointer is for cross-process
+    // consistency, not for our own rendering.
+  }
+  // Re-open the SSE stream on the new board.
+  _kanbanStopPolling();
+  await loadKanban(true);
+  await loadKanbanBoards();
+  _kanbanStartPolling();
+}
+
+// ── Create / rename / archive board modals ──────────────────────────────────
+
+function openKanbanCreateBoard(){
+  const modal = document.getElementById('kanbanBoardModal');
+  if (!modal) return;
+  document.getElementById('kanbanBoardModalMode').value = 'create';
+  document.getElementById('kanbanBoardModalSlug').value = '';
+  document.getElementById('kanbanBoardModalTitle').textContent = t('kanban_new_board') || 'New board';
+  document.getElementById('kanbanBoardModalName').value = '';
+  document.getElementById('kanbanBoardModalSlugInput').value = '';
+  document.getElementById('kanbanBoardModalSlugInput').disabled = false;
+  document.getElementById('kanbanBoardModalSlugRow').style.display = '';
+  document.getElementById('kanbanBoardModalDesc').value = '';
+  document.getElementById('kanbanBoardModalIcon').value = '';
+  document.getElementById('kanbanBoardModalColor').value = '#7aa2ff';
+  document.getElementById('kanbanBoardModalError').textContent = '';
+  modal.hidden = false;
+  // Auto-focus name field
+  setTimeout(() => document.getElementById('kanbanBoardModalName').focus(), 50);
+  // Auto-suggest slug from name as user types
+  const nameEl = document.getElementById('kanbanBoardModalName');
+  const slugEl = document.getElementById('kanbanBoardModalSlugInput');
+  let userEditedSlug = false;
+  slugEl.addEventListener('input', () => { userEditedSlug = true; }, {once: false});
+  const onName = () => {
+    if (!userEditedSlug) {
+      slugEl.value = String(nameEl.value || '').toLowerCase().replace(/[^a-z0-9-_ ]+/g, '').replace(/\s+/g, '-').slice(0, 48);
+    }
+  };
+  nameEl.removeEventListener('input', nameEl._kanbanOnNameInput || (() => {}));
+  nameEl._kanbanOnNameInput = onName;
+  nameEl.addEventListener('input', onName);
+  // Close on Escape
+  document.addEventListener('keydown', _kanbanBoardModalEsc);
+}
+
+function openKanbanRenameBoard(){
+  const modal = document.getElementById('kanbanBoardModal');
+  if (!modal) return;
+  const current = _kanbanCurrentBoard || 'default';
+  if (current === 'default') return;  // default's slug is immutable
+  const meta = (_kanbanBoardsList || []).find(b => b.slug === current);
+  if (!meta) return;
+  document.getElementById('kanbanBoardModalMode').value = 'rename';
+  document.getElementById('kanbanBoardModalSlug').value = current;
+  document.getElementById('kanbanBoardModalTitle').textContent = t('kanban_rename_board') || 'Rename board';
+  document.getElementById('kanbanBoardModalName').value = meta.name || '';
+  document.getElementById('kanbanBoardModalSlugInput').value = current;
+  document.getElementById('kanbanBoardModalSlugInput').disabled = true;  // slug is immutable
+  // Hide the slug row — it's locked, less visual noise.
+  document.getElementById('kanbanBoardModalSlugRow').style.display = 'none';
+  document.getElementById('kanbanBoardModalDesc').value = meta.description || '';
+  document.getElementById('kanbanBoardModalIcon').value = meta.icon || '';
+  document.getElementById('kanbanBoardModalColor').value = meta.color || '#7aa2ff';
+  document.getElementById('kanbanBoardModalError').textContent = '';
+  modal.hidden = false;
+  setTimeout(() => document.getElementById('kanbanBoardModalName').focus(), 50);
+  document.addEventListener('keydown', _kanbanBoardModalEsc);
+}
+
+function _kanbanBoardModalEsc(ev){
+  if (ev.key === 'Escape') closeKanbanBoardModal();
+}
+
+function closeKanbanBoardModal(){
+  const modal = document.getElementById('kanbanBoardModal');
+  if (modal) modal.hidden = true;
+  document.removeEventListener('keydown', _kanbanBoardModalEsc);
+}
+
+async function submitKanbanBoardModal(){
+  const errEl = document.getElementById('kanbanBoardModalError');
+  errEl.textContent = '';
+  const mode = document.getElementById('kanbanBoardModalMode').value;
+  const name = (document.getElementById('kanbanBoardModalName').value || '').trim();
+  const slugInput = (document.getElementById('kanbanBoardModalSlugInput').value || '').trim();
+  const description = (document.getElementById('kanbanBoardModalDesc').value || '').trim();
+  const icon = (document.getElementById('kanbanBoardModalIcon').value || '').trim();
+  const color = (document.getElementById('kanbanBoardModalColor').value || '').trim();
+  const submitBtn = document.getElementById('kanbanBoardModalSubmit');
+  if (!name) {
+    errEl.textContent = t('kanban_board_name_required') || 'Name is required';
+    return;
+  }
+  if (mode === 'create') {
+    if (!slugInput) {
+      errEl.textContent = t('kanban_board_slug_required') || 'Slug is required';
+      return;
+    }
+    if (submitBtn) submitBtn.disabled = true;
+    try {
+      const res = await api('/api/kanban/boards', {
+        method: 'POST',
+        body: JSON.stringify({slug: slugInput, name, description, icon, color, switch: true}),
+      });
+      closeKanbanBoardModal();
+      // Switch to the new board and reload
+      const newSlug = (res && res.board && res.board.slug) || slugInput;
+      _kanbanCurrentBoard = (newSlug === 'default') ? null : newSlug;
+      _kanbanSetSavedBoard(newSlug);
+      _kanbanLatestEventId = 0;
+      _kanbanStopPolling();
+      await loadKanban(true);
+      await loadKanbanBoards();
+      _kanbanStartPolling();
+    } catch(e) {
+      errEl.textContent = (e && (e.message || e.error)) || String(e);
+    } finally {
+      if (submitBtn) submitBtn.disabled = false;
+    }
+  } else if (mode === 'rename') {
+    const slug = document.getElementById('kanbanBoardModalSlug').value;
+    if (!slug) { errEl.textContent = 'Missing slug'; return; }
+    if (submitBtn) submitBtn.disabled = true;
+    try {
+      await api('/api/kanban/boards/' + encodeURIComponent(slug), {
+        method: 'PATCH',
+        body: JSON.stringify({name, description, icon, color}),
+      });
+      closeKanbanBoardModal();
+      await loadKanbanBoards();  // refresh switcher label/icon
+    } catch(e) {
+      errEl.textContent = (e && (e.message || e.error)) || String(e);
+    } finally {
+      if (submitBtn) submitBtn.disabled = false;
+    }
+  }
+}
+
+async function archiveKanbanBoard(){
+  const current = _kanbanCurrentBoard || 'default';
+  if (current === 'default') return;
+  const meta = (_kanbanBoardsList || []).find(b => b.slug === current);
+  const label = meta && meta.name ? meta.name : current;
+  const ok = await showConfirmDialog({
+    title: t('kanban_archive_board') || 'Archive board',
+    message: (t('kanban_archive_board_confirm') || 'Archive board "{name}"? Tasks remain on disk and the board can be restored from kanban/boards/_archived/.').replace('{name}', label),
+    confirmLabel: t('kanban_archive_board') || 'Archive',
+    danger: true,
+    focusCancel: true,
+  });
+  if (!ok) return;
+  // CRITICAL: stop the SSE stream BEFORE the archive call. The library's
+  // kb.connect(board=<slug>) auto-creates the on-disk directory + DB on
+  // first call — so any in-flight stream that polls task_events while
+  // we're archiving will silently re-materialise the directory we just
+  // moved to _archived/. Tearing down the stream first avoids that race.
+  _kanbanStopPolling();
+  try {
+    await api('/api/kanban/boards/' + encodeURIComponent(current), {method: 'DELETE'});
+    // Server falls back to default — match that locally.
+    _kanbanCurrentBoard = null;
+    _kanbanSetSavedBoard('default');
+    _kanbanLatestEventId = 0;
+    await loadKanban(true);
+    await loadKanbanBoards();
+    _kanbanStartPolling();
+    showToast(t('kanban_board_archived') || 'Board archived');
+  } catch(e) {
+    // Restart the stream on failure so the UI doesn't go stale.
+    _kanbanStartPolling();
+    showToast(t('kanban_unavailable') + ': ' + (e.message || e), 'error');
+  }
 }
 
 // ── Insights panel ──
@@ -2548,6 +3557,7 @@ async function switchToProfile(name) {
     if (_currentPanel === 'skills') await loadSkills();
     if (_currentPanel === 'memory') await loadMemory();
     if (_currentPanel === 'tasks') await loadCrons();
+    if (_currentPanel === 'kanban') await loadKanban();
     if (_currentPanel === 'profiles') await loadProfilesPanel();
     if (_currentPanel === 'workspaces') await loadWorkspacesPanel();
 
