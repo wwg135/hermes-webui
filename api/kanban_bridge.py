@@ -965,19 +965,35 @@ def _handle_events_sse_stream(handler, parsed):
       board=<slug>  Pin the stream to a specific board. Switching boards
                     requires the client to close and re-open the stream.
 
+    Header (set automatically by EventSource on reconnect):
+      Last-Event-ID  Fallback resume cursor when ?since= is absent. The
+                     server emits ``id: <event_id>`` on every events frame
+                     so the browser can resume cleanly across drops without
+                     re-receiving up to _KANBAN_SSE_BATCH_LIMIT events the
+                     client already has.
+
     Mirrors the agent dashboard's WebSocket /events contract event-for-event
     so a client that handles one can handle the other with only the
     transport swapped.
     """
-    import socket as _socket
     try:
         board = _resolve_board(parsed)
     except (ValueError, LookupError) as exc:
         return bad(handler, str(exc), status=400 if isinstance(exc, ValueError) else 404)
 
     qs = parse_qs(parsed.query or "")
+    # Resolution chain: ?since= query param → Last-Event-ID header → 0.
+    # The Last-Event-ID header is what EventSource sends automatically on
+    # reconnect; honouring it lets the browser resume cleanly without the
+    # client needing to track the cursor in JS.
+    since_raw = (qs.get("since") or [None])[0]
+    if since_raw is None:
+        try:
+            since_raw = handler.headers.get("Last-Event-ID")
+        except Exception:
+            since_raw = None
     try:
-        cursor = int((qs.get("since") or ["0"])[0])
+        cursor = int(since_raw) if since_raw is not None else 0
     except (TypeError, ValueError):
         cursor = 0
     if cursor < 0:
@@ -1006,9 +1022,15 @@ def _handle_events_sse_stream(handler, parsed):
         while True:
             cursor, events = _kanban_sse_fetch_new(board, cursor)
             if events:
+                # Emit `id: <last_event_id>` on every events frame so the
+                # browser sets Last-Event-ID on auto-reconnect, letting us
+                # resume from there without re-streaming the backlog.
                 payload = json.dumps({"events": events, "cursor": cursor})
+                frame = (
+                    f"id: {cursor}\nevent: events\ndata: {payload}\n\n"
+                ).encode("utf-8")
                 try:
-                    handler.wfile.write(f"event: events\ndata: {payload}\n\n".encode("utf-8"))
+                    handler.wfile.write(frame)
                     handler.wfile.flush()
                 except (BrokenPipeError, ConnectionResetError, ValueError, OSError):
                     return True
@@ -1135,16 +1157,23 @@ def handle_kanban_post(handler, parsed, body) -> bool:
 def handle_kanban_patch(handler, parsed, body) -> bool:
     path = parsed.path
     try:
-        board_q = _resolve_board(parsed)
-        board_b = _resolve_board_from_body(body)
-        board = board_q if board_q is not None else board_b
-        # PATCH /api/kanban/boards/<slug> — update board metadata
+        # /boards/<slug> routes operate on the on-disk board collection
+        # itself — the slug travels in the URL path, not via ?board=. Match
+        # them BEFORE resolving the board param so a stray ?board=ghost in
+        # the query string doesn't 404 the legitimate `experiments` rename.
+        # (Mirrors handle_kanban_post's structure — fixes asymmetry caught
+        # by Opus advisor.)
         _BOARDS_PREFIX = "/api/kanban/boards/"
         if path.startswith(_BOARDS_PREFIX):
             slug = unquote(path[len(_BOARDS_PREFIX):]).strip("/")
             if not slug or "/" in slug:
                 return False
             return j(handler, _update_board_payload(slug, body)) or True
+        # Task-scoped writes accept ?board=<slug> (or body.board) to pin the
+        # write to a specific board. Query takes precedence over body.
+        board_q = _resolve_board(parsed)
+        board_b = _resolve_board_from_body(body)
+        board = board_q if board_q is not None else board_b
         if path.startswith(_TASK_PREFIX):
             task_id = unquote(path[len(_TASK_PREFIX):]).strip("/")
             if not task_id or "/" in task_id:
@@ -1164,16 +1193,17 @@ def handle_kanban_patch(handler, parsed, body) -> bool:
 def handle_kanban_delete(handler, parsed, body) -> bool:
     path = parsed.path
     try:
-        board_q = _resolve_board(parsed)
-        board_b = _resolve_board_from_body(body)
-        board = board_q if board_q is not None else board_b
-        # DELETE /api/kanban/boards/<slug> — archive (default) or hard-delete
+        # Same routing reorder as PATCH: /boards/<slug> path-routed first,
+        # so a stray ?board=ghost can't 404 a legitimate board archive.
         _BOARDS_PREFIX = "/api/kanban/boards/"
         if path.startswith(_BOARDS_PREFIX):
             slug = unquote(path[len(_BOARDS_PREFIX):]).strip("/")
             if not slug or "/" in slug:
                 return False
             return j(handler, _delete_board_payload(slug, parsed)) or True
+        board_q = _resolve_board(parsed)
+        board_b = _resolve_board_from_body(body)
+        board = board_q if board_q is not None else board_b
         if path == "/api/kanban/links":
             return j(handler, _link_tasks_payload(body, unlink=True, board=board)) or True
     except ImportError as exc:

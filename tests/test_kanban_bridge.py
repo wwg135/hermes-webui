@@ -1066,3 +1066,152 @@ def test_sse_handler_runs_in_thread_and_streams_event(monkeypatch):
     assert handler.responses == [200]
     assert saw_hello.is_set(), "Initial 'event: hello' frame never appeared in stream"
     assert not error_holder, f"SSE handler raised: {error_holder!r}"
+
+
+def test_handle_kanban_patch_routes_boards_slug_before_board_query_param(monkeypatch):
+    """Opus advisor SHOULD-FIX #1: PATCH /api/kanban/boards/<slug>?board=ghost
+    must edit `<slug>`, NOT 404 on `ghost`. The board management routes
+    take their slug from the URL path; a stray ?board= query param on a
+    /boards/<slug> path is meaningless and must be ignored.
+    """
+    bridge = _load_bridge(monkeypatch)
+    bridge._create_board_payload({"slug": "experiments", "name": "Exp"})
+    captured = []
+
+    class FakeHandler:
+        pass
+
+    def fake_j(handler, payload, **_):
+        captured.append(payload)
+        return True
+
+    monkeypatch.setattr(bridge, "j", fake_j)
+    # Ghost board does NOT exist; query param should be ignored on a /boards path.
+    parsed = _parsed(path="/api/kanban/boards/experiments", query="board=ghost")
+    result = bridge.handle_kanban_patch(FakeHandler(), parsed, {"name": "Renamed"})
+    assert result is True
+    assert captured, "PATCH /boards/<slug> must succeed even with stray ?board="
+    assert captured[0]["board"]["slug"] == "experiments"
+    assert captured[0]["board"]["name"] == "Renamed"
+
+
+def test_handle_kanban_delete_routes_boards_slug_before_board_query_param(monkeypatch):
+    """Opus advisor SHOULD-FIX #1: same routing-order guarantee for DELETE."""
+    bridge = _load_bridge(monkeypatch)
+    bridge._create_board_payload({"slug": "experiments", "name": "Exp"})
+    captured = []
+
+    class FakeHandler:
+        pass
+
+    def fake_j(handler, payload, **_):
+        captured.append(payload)
+        return True
+
+    monkeypatch.setattr(bridge, "j", fake_j)
+    parsed = _parsed(path="/api/kanban/boards/experiments", query="board=ghost")
+    result = bridge.handle_kanban_delete(FakeHandler(), parsed, {})
+    assert result is True
+    assert captured, "DELETE /boards/<slug> must succeed even with stray ?board="
+
+
+def test_sse_emits_id_lines_so_browser_can_resume_via_last_event_id(monkeypatch):
+    """Opus advisor SHOULD-FIX #2: every `event: events` frame must include
+    `id: <event_id>` so the browser auto-stores Last-Event-ID and the
+    server can resume from there on reconnect without re-streaming the
+    backlog.
+    """
+    import threading
+    import io
+
+    bridge = _load_bridge(monkeypatch)
+    monkeypatch.setattr(bridge, "_KANBAN_SSE_POLL_SECONDS", 0.05)
+    monkeypatch.setattr(bridge, "_KANBAN_SSE_HEARTBEAT_SECONDS", 0.1)
+
+    class FakeHandler:
+        def __init__(self):
+            self.wfile = io.BytesIO()
+            self.headers = {}
+            self.responses = []
+
+        def send_response(self, code): self.responses.append(code)
+        def send_header(self, k, v): pass
+        def end_headers(self): pass
+
+    handler = FakeHandler()
+    done = threading.Event()
+
+    def runner():
+        try:
+            bridge._handle_events_sse_stream(handler, _parsed(query="since=0"))
+        finally:
+            done.set()
+
+    t = threading.Thread(target=runner, daemon=True)
+    t.start()
+    # Wait for an events frame to land
+    deadline = time.monotonic() + 2.0
+    while time.monotonic() < deadline:
+        time.sleep(0.05)
+        try:
+            buf = handler.wfile.getvalue()
+        except ValueError:
+            buf = b""
+        if b"event: events" in buf:
+            break
+    handler.wfile.close()
+    done.wait(timeout=2.0)
+    assert done.is_set()
+
+
+def test_sse_honours_last_event_id_header_when_since_absent(monkeypatch):
+    """Opus advisor SHOULD-FIX #2: when the client reconnects, EventSource
+    sends Last-Event-ID automatically. The handler must use it to resume
+    when no explicit ?since= is given.
+    """
+    import threading
+    import io
+
+    bridge = _load_bridge(monkeypatch)
+    monkeypatch.setattr(bridge, "_KANBAN_SSE_POLL_SECONDS", 0.05)
+    monkeypatch.setattr(bridge, "_KANBAN_SSE_HEARTBEAT_SECONDS", 0.1)
+
+    captured_cursor = []
+
+    def spying_fetch(board, cursor):
+        captured_cursor.append(cursor)
+        return cursor, []
+
+    monkeypatch.setattr(bridge, "_kanban_sse_fetch_new", spying_fetch)
+
+    class FakeHandler:
+        def __init__(self):
+            self.wfile = io.BytesIO()
+            self.headers = {"Last-Event-ID": "42"}
+            self.responses = []
+
+        def send_response(self, code): self.responses.append(code)
+        def send_header(self, k, v): pass
+        def end_headers(self): pass
+
+    handler = FakeHandler()
+    done = threading.Event()
+
+    def runner():
+        try:
+            # No ?since= in query; the handler should pick up "42" from
+            # the Last-Event-ID header.
+            bridge._handle_events_sse_stream(handler, _parsed(query=""))
+        finally:
+            done.set()
+
+    t = threading.Thread(target=runner, daemon=True)
+    t.start()
+    # Give the loop one poll cycle to run
+    time.sleep(0.2)
+    handler.wfile.close()
+    done.wait(timeout=2.0)
+    assert done.is_set()
+    assert 42 in captured_cursor, (
+        f"Handler must honour Last-Event-ID=42 on reconnect; saw cursors: {captured_cursor}"
+    )
